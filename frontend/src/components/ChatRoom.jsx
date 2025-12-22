@@ -20,6 +20,7 @@ export default function ChatRoom() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recognitionRef = useRef(null);
+  const aiTypingTimeoutRef = useRef(null);
   const [showMicInstructions, setShowMicInstructions] = useState(false);
   const [transcribedText, setTranscribedText] = useState('');
   const [showMentions, setShowMentions] = useState(false);
@@ -47,6 +48,8 @@ export default function ChatRoom() {
     dateTo: ''
   });
   const [searchHistory, setSearchHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   // Close mentions dropdown when clicking outside
   useEffect(() => {
@@ -78,9 +81,11 @@ export default function ChatRoom() {
 
     newSocket.on('connect', () => {
       console.log('Connected to server');
-      newSocket.emit('join_room', roomId);
-      fetchMessages();
-      fetchRoom();
+      if (roomId) {
+        newSocket.emit('join_room', roomId);
+        // Refresh messages when socket connects (room already fetched above)
+        fetchMessages();
+      }
     });
 
     newSocket.on('new_message', (data) => {
@@ -98,6 +103,13 @@ export default function ChatRoom() {
 
     newSocket.on('ai_code_generated', (data) => {
       console.log('🤖 Received AI code generated event:', data);
+      // Turn off typing indicator when AI response is received
+      setIsTyping(false);
+      if (aiTypingTimeoutRef.current) {
+        clearTimeout(aiTypingTimeoutRef.current);
+        aiTypingTimeoutRef.current = null;
+      }
+      
       if (data.message) {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
@@ -192,15 +204,35 @@ export default function ChatRoom() {
     newSocket.on('ai_typing', () => {
       console.log('🤖 AI is typing...');
       setIsTyping(true);
-      // Set a longer timeout in case AI takes time
-      setTimeout(() => {
+      // Clear any existing timeout
+      if (aiTypingTimeoutRef.current) {
+        clearTimeout(aiTypingTimeoutRef.current);
+      }
+      // Set a timeout to turn off typing indicator if no response
+      aiTypingTimeoutRef.current = setTimeout(() => {
         setIsTyping(false);
         console.log('⏱️ AI typing timeout - if no response, check backend logs');
+        aiTypingTimeoutRef.current = null;
       }, 30000); // 30 seconds timeout
+    });
+
+    newSocket.on('ai_typing_stopped', () => {
+      console.log('🤖 AI stopped typing');
+      setIsTyping(false);
+      if (aiTypingTimeoutRef.current) {
+        clearTimeout(aiTypingTimeoutRef.current);
+        aiTypingTimeoutRef.current = null;
+      }
     });
 
     newSocket.on('error', (error) => {
       console.error('Socket error:', error);
+      // Turn off typing indicator on error
+      setIsTyping(false);
+      if (aiTypingTimeoutRef.current) {
+        clearTimeout(aiTypingTimeoutRef.current);
+        aiTypingTimeoutRef.current = null;
+      }
       if (error.message) {
         alert(`Error: ${error.message}`);
       }
@@ -221,32 +253,83 @@ export default function ChatRoom() {
         recognitionRef.current.stop();
         recognitionRef.current = null;
       }
+      // Cleanup AI typing timeout
+      if (aiTypingTimeoutRef.current) {
+        clearTimeout(aiTypingTimeoutRef.current);
+        aiTypingTimeoutRef.current = null;
+      }
+      setIsTyping(false);
     };
-  }, [roomId, token, scrollToBottom]);
+  }, [roomId, token]);
 
-  const fetchMessages = async () => {
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  const fetchMessages = useCallback(async () => {
+    if (!roomId || !token) return;
+    
     try {
       const response = await axios.get(`/api/chat/room/${roomId}/messages`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setMessages(response.data.messages);
-      scrollToBottom();
+      setMessages(response.data.messages || []);
+      setTimeout(() => scrollToBottom(), 100);
     } catch (error) {
       console.error('Error fetching messages:', error);
+      // Don't set error here, just log it - messages can be empty
     }
-  };
+  }, [roomId, token, scrollToBottom]);
 
-  const fetchRoom = async () => {
+  const fetchRoom = useCallback(async () => {
+    if (!roomId) {
+      setError('Invalid room ID');
+      setLoading(false);
+      return;
+    }
+
+    if (!token) {
+      setError('Authentication required');
+      setLoading(false);
+      return;
+    }
+
     try {
+      setLoading(true);
+      setError(null);
       const response = await axios.get(`/api/chat/room/${roomId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setRoom(response.data.room);
-      setPinnedMessages(response.data.room.pinnedMessages || []);
+      
+      if (response.data && response.data.room) {
+        setRoom(response.data.room);
+        setPinnedMessages(response.data.room.pinnedMessages || []);
+      } else {
+        setError('Room not found');
+      }
     } catch (error) {
       console.error('Error fetching room:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to load chat room';
+      setError(errorMessage);
+      
+      // If it's a 403 or 404, redirect after a delay
+      if (error.response?.status === 403 || error.response?.status === 404) {
+        setTimeout(() => {
+          navigate('/');
+        }, 3000);
+      }
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [roomId, token, navigate]);
+
+  // Fetch room and messages immediately when component mounts or roomId changes
+  useEffect(() => {
+    if (roomId && token) {
+      fetchRoom();
+      fetchMessages();
+    }
+  }, [roomId, token, fetchRoom, fetchMessages]);
 
   // Message action handlers
   const handleEditMessage = async (messageId, newContent) => {
@@ -436,10 +519,6 @@ export default function ChatRoom() {
       }
     }
   };
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
 
   const handleSendMessage = () => {
     if (!inputMessage.trim() || !socket) return;
@@ -900,6 +979,69 @@ export default function ChatRoom() {
     
     return result.length > 0 ? result : text;
   };
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading chat room...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <div className="text-center max-w-md p-6 bg-white rounded-lg shadow-lg border border-red-200">
+          <div className="text-red-600 text-5xl mb-4">⚠️</div>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Unable to Load Chat Room</h2>
+          <p className="text-gray-600 mb-4">{error}</p>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={() => navigate('/')}
+              className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+            >
+              Back to Dashboard
+            </button>
+            <button
+              onClick={() => {
+                setError(null);
+                setLoading(true);
+                fetchRoom();
+                fetchMessages();
+              }}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error if roomId is missing
+  if (!roomId) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <div className="text-center max-w-md p-6 bg-white rounded-lg shadow-lg border border-red-200">
+          <div className="text-red-600 text-5xl mb-4">❌</div>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Invalid Room</h2>
+          <p className="text-gray-600 mb-4">No room ID provided. Please select a chat room from the dashboard.</p>
+          <button
+            onClick={() => navigate('/')}
+            className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+          >
+            Back to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-gray-50">

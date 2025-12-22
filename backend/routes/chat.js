@@ -183,6 +183,12 @@ router.get('/room/:roomId/messages', authenticateToken, async (req, res) => {
 // Get chat room details
 router.get('/room/:roomId', authenticateToken, async (req, res) => {
   try {
+    // Validate roomId format
+    const mongoose = (await import('mongoose')).default;
+    if (!mongoose.Types.ObjectId.isValid(req.params.roomId)) {
+      return res.status(400).json({ error: 'Invalid room ID format' });
+    }
+
     const room = await ChatRoom.findById(req.params.roomId)
       .populate('members', 'username avatar online')
       .populate('project', 'name githubRepo');
@@ -211,20 +217,6 @@ router.get('/room/:roomId', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch chat room' });
   }
 });
-
-// Helper function to generate unique group code
-async function generateGroupCode(model, fieldName = 'groupCode') {
-  const crypto = (await import('crypto')).default;
-  let code;
-  let exists = true;
-  while (exists) {
-    // Generate a 6-character alphanumeric code (uppercase, excluding confusing characters)
-    code = crypto.randomBytes(3).toString('hex').toUpperCase().slice(0, 6);
-    const existing = await model.findOne({ [fieldName]: code });
-    exists = !!existing;
-  }
-  return code;
-}
 
 // Helper function to generate unique group code
 async function generateGroupCode(model, fieldName = 'groupCode') {
@@ -1104,6 +1096,139 @@ router.post('/join-code/:groupCode', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error joining chatroom via group code:', error);
     res.status(500).json({ error: 'Failed to join chatroom: ' + error.message });
+  }
+});
+
+// Delete a chatroom (only for personal chatrooms or if user is owner)
+router.delete('/room/:roomId', authenticateToken, async (req, res) => {
+  try {
+    const room = await ChatRoom.findById(req.params.roomId)
+      .populate('project');
+    
+    if (!room) {
+      return res.status(404).json({ error: 'Chat room not found' });
+    }
+    
+    // Check if user is a member
+    const isMember = room.members.some(memberId => 
+      memberId.toString() === req.userId.toString()
+    );
+    
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
+    
+    // If room is linked to a project, don't allow deletion (only leave)
+    if (room.project) {
+      return res.status(400).json({ error: 'Cannot delete project chatroom. You can only leave the project.' });
+    }
+    
+    // Remove room from all users' references
+    const User = (await import('../models/User.js')).default;
+    await User.updateMany(
+      { projects: { $in: [room._id] } },
+      { $pull: { projects: room._id } }
+    );
+    
+    // Delete the room
+    await ChatRoom.findByIdAndDelete(req.params.roomId);
+    
+    res.json({ success: true, message: 'Chatroom deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting chatroom:', error);
+    res.status(500).json({ error: 'Failed to delete chatroom: ' + error.message });
+  }
+});
+
+// Leave a chatroom
+router.post('/room/:roomId/leave', authenticateToken, async (req, res) => {
+  try {
+    const room = await ChatRoom.findById(req.params.roomId);
+    
+    if (!room) {
+      return res.status(404).json({ error: 'Chat room not found' });
+    }
+    
+    // Check if user is a member
+    const isMember = room.members.some(memberId => 
+      memberId.toString() === req.userId.toString()
+    );
+    
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
+    
+    // Remove user from members
+    room.members = room.members.filter(
+      memberId => memberId.toString() !== req.userId.toString()
+    );
+    
+    await room.save();
+    
+    // If it's a project chatroom, also remove from project
+    if (room.project) {
+      const Project = (await import('../models/Project.js')).default;
+      const project = await Project.findById(room.project);
+      if (project) {
+        project.members = project.members.filter(
+          m => m.user.toString() !== req.userId.toString()
+        );
+        await project.save();
+        
+        // Remove project from user's projects list
+        const User = (await import('../models/User.js')).default;
+        const user = await User.findById(req.userId);
+        if (user) {
+          user.projects = user.projects.filter(
+            p => p.toString() !== project._id.toString()
+          );
+          await user.save();
+        }
+      }
+    }
+    
+    res.json({ success: true, message: 'Left chatroom successfully' });
+  } catch (error) {
+    console.error('Error leaving chatroom:', error);
+    res.status(500).json({ error: 'Failed to leave chatroom: ' + error.message });
+  }
+});
+
+// Update chatroom name (only for personal chatrooms)
+router.patch('/room/:roomId', authenticateToken, async (req, res) => {
+  try {
+    const { name } = req.body;
+    const room = await ChatRoom.findById(req.params.roomId);
+    
+    if (!room) {
+      return res.status(404).json({ error: 'Chat room not found' });
+    }
+    
+    // Check if user is a member
+    const isMember = room.members.some(memberId => 
+      memberId.toString() === req.userId.toString()
+    );
+    
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
+    
+    // Only allow editing personal chatrooms (not project chatrooms)
+    if (room.project) {
+      return res.status(400).json({ error: 'Cannot edit project chatroom name' });
+    }
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Chatroom name is required' });
+    }
+    
+    room.name = name.trim();
+    await room.save();
+    
+    res.json({ success: true, room });
+  } catch (error) {
+    console.error('Error updating chatroom:', error);
+    res.status(500).json({ error: 'Failed to update chatroom: ' + error.message });
   }
 });
 

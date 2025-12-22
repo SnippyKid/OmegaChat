@@ -4,10 +4,14 @@
   "description": "Developer chat app with AI code generation and GitHub integration",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "dev": "npm run check-deps && concurrently \"npm run server\" \"npm run client\"",
+    "start": "npm run dev",
     "server": "cd backend && npm run dev",
     "client": "cd frontend && npm run dev",
-    "install-all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+    "install-all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "check-deps": "node -e \"const fs=require('fs'); const paths=['node_modules','backend/node_modules','frontend/node_modules']; const missing=paths.filter(p=>!fs.existsSync(p)); if(missing.length>0){console.log('⚠️  Missing dependencies in:', missing.join(', ')); console.log('💡 Run: npm run install-all (one time only)'); process.exit(1);} else {console.log('✅ All dependencies installed - starting servers...');}\"",
+    "quick-start": "npm run check-deps || npm run install-all && npm run dev",
+    "kill-ports": "node -e \"const {execSync}=require('child_process'); try{const p5000=execSync('netstat -ano | findstr :5000 | findstr LISTENING').toString(); const p5173=execSync('netstat -ano | findstr :5173 | findstr LISTENING').toString(); console.log('Ports in use:', p5000||p5173?'Yes':'No');}catch(e){console.log('No processes found');}\""
   },
   "keywords": ["chat", "github", "ai", "developer"],
   "author": "",

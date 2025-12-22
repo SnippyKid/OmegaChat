@@ -330,6 +330,9 @@ Key File Contents:`;
             roomId
           });
           
+          // Emit stop typing indicator on error
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+          
           // Also emit error to sender
           socket.emit('error', { 
             message: `AI generation failed: ${error.message}`,
@@ -379,6 +382,10 @@ Key File Contents:`;
           codeLength: savedMessage.aiResponse?.code?.length || 0
         });
         
+        // Emit stop typing indicator first
+        io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+        
+        // Then emit the AI response
         io.to(`room:${roomId}`).emit('ai_code_generated', {
           message: savedMessage,
           roomId

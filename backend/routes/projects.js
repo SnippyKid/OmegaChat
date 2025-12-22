@@ -24,16 +24,21 @@ async function generateGroupCode(model, fieldName = 'groupCode') {
 // Get user's projects
 router.get('/my-projects', authenticateToken, async (req, res) => {
   try {
+    // Populate projects with members and the linked chatRoom (including chatRoom members)
     const user = await User.findById(req.userId).populate({
       path: 'projects',
-      populate: {
-        path: 'members.user',
-        select: 'username avatar'
-      }
+      populate: [
+        { path: 'members.user', select: 'username avatar' },
+        { 
+          path: 'chatRoom',
+          populate: { path: 'members', select: 'username avatar' }
+        }
+      ]
     });
     
     res.json({ projects: user.projects || [] });
   } catch (error) {
+    console.error('Error fetching user projects:', error);
     res.status(500).json({ error: 'Failed to fetch projects' });
   }
 });
@@ -376,6 +381,96 @@ router.post('/:projectId/invite/email', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to send invitation' });
+  }
+});
+
+// Delete a project (only if user is owner)
+router.delete('/:projectId', authenticateToken, async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.projectId);
+    
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Check if user is the owner
+    const owner = project.members.find(m => m.role === 'owner');
+    if (!owner || owner.user.toString() !== req.userId.toString()) {
+      return res.status(403).json({ error: 'Only the project owner can delete the project' });
+    }
+    
+    // Delete associated chatroom
+    if (project.chatRoom) {
+      await ChatRoom.findByIdAndDelete(project.chatRoom);
+    }
+    
+    // Remove project from all users' projects list
+    await User.updateMany(
+      { projects: project._id },
+      { $pull: { projects: project._id } }
+    );
+    
+    // Delete the project
+    await Project.findByIdAndDelete(req.params.projectId);
+    
+    res.json({ success: true, message: 'Project deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting project:', error);
+    res.status(500).json({ error: 'Failed to delete project: ' + error.message });
+  }
+});
+
+// Leave a project
+router.post('/:projectId/leave', authenticateToken, async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.projectId);
+    
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Check if user is a member
+    const isMember = project.members.some(m => m.user.toString() === req.userId.toString());
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this project' });
+    }
+    
+    // Check if user is owner
+    const owner = project.members.find(m => m.role === 'owner');
+    if (owner && owner.user.toString() === req.userId.toString()) {
+      return res.status(400).json({ error: 'Project owner cannot leave. Please delete the project or transfer ownership.' });
+    }
+    
+    // Remove user from project members
+    project.members = project.members.filter(
+      m => m.user.toString() !== req.userId.toString()
+    );
+    await project.save();
+    
+    // Remove user from chatroom if it exists
+    if (project.chatRoom) {
+      const chatRoom = await ChatRoom.findById(project.chatRoom);
+      if (chatRoom) {
+        chatRoom.members = chatRoom.members.filter(
+          m => m.toString() !== req.userId.toString()
+        );
+        await chatRoom.save();
+      }
+    }
+    
+    // Remove project from user's projects list
+    const user = await User.findById(req.userId);
+    if (user) {
+      user.projects = user.projects.filter(
+        p => p.toString() !== project._id.toString()
+      );
+      await user.save();
+    }
+    
+    res.json({ success: true, message: 'Left project successfully' });
+  } catch (error) {
+    console.error('Error leaving project:', error);
+    res.status(500).json({ error: 'Failed to leave project: ' + error.message });
   }
 });
 

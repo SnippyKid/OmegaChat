@@ -232,4 +232,15 @@ httpServer.listen(PORT, () => {
   console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
   console.log(`🗄️  MongoDB URI: ${MONGODB_URI}`);
   console.log(`🔌 Socket.io ready for real-time chat`);
+}).on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use!`);
+    console.error(`💡 Solution: Kill the process using port ${PORT} or use a different port.`);
+    console.error(`💡 Windows: netstat -ano | findstr :${PORT} then taskkill /F /PID <PID>`);
+    console.error(`💡 Or use: start.bat (it will auto-kill processes)`);
+    process.exit(1);
+  } else {
+    console.error('❌ Server error:', error);
+    process.exit(1);
+  }
 });
