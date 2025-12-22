@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
-import { MessageSquare, Plus, LogOut, Github, Mail, Users, Linkedin, MessageCircle, X } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, Github, Mail, Users, Linkedin, MessageCircle, X, Copy, Key } from 'lucide-react';
 
 export default function Dashboard() {
   const { user, token, logout } = useAuth();
@@ -21,6 +21,10 @@ export default function Dashboard() {
   const [inviteWhatsApp, setInviteWhatsApp] = useState('');
   const [inviteLinkedIn, setInviteLinkedIn] = useState('');
   const [personalRoomName, setPersonalRoomName] = useState('');
+  const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joiningCode, setJoiningCode] = useState(false);
+  const [projectGroupCode, setProjectGroupCode] = useState(null);
 
   useEffect(() => {
     fetchProjects();
@@ -149,9 +153,12 @@ export default function Dashboard() {
   };
 
   const handleSkipToChat = () => {
-    setShowInviteModal(false);
-    setSelectedProject(null);
-    navigate(`/chat/${selectedProject.chatRoom}`);
+    if (selectedProject?.chatRoom) {
+      const chatRoomId = selectedProject.chatRoom;
+      setShowInviteModal(false);
+      setSelectedProject(null);
+      navigate(`/chat/${chatRoomId}`);
+    }
   };
 
   const openChat = (project) => {
@@ -188,6 +195,80 @@ export default function Dashboard() {
     }
   };
 
+  const fetchProjectGroupCode = async () => {
+    if (!selectedProject?._id) return;
+    try {
+      const response = await axios.get(`/api/projects/${selectedProject._id}/group-code`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setProjectGroupCode(response.data.groupCode);
+    } catch (error) {
+      console.error('Error fetching group code:', error);
+      alert('Failed to fetch group code: ' + (error.response?.data?.error || error.message));
+    }
+  };
+
+  const handleCopyGroupCode = (code) => {
+    navigator.clipboard.writeText(code);
+    alert('Group code copied to clipboard!');
+  };
+
+  const handleJoinViaCode = async () => {
+    if (!joinCode.trim()) {
+      alert('Please enter a group code');
+      return;
+    }
+    
+    setJoiningCode(true);
+    try {
+      // Try joining as project first
+      try {
+        const response = await axios.post(`/api/projects/join-code/${joinCode.trim().toUpperCase()}`, {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        
+        if (response.data.success) {
+          alert('Successfully joined project!');
+          setShowJoinCodeModal(false);
+          setJoinCode('');
+          await fetchProjects();
+          if (response.data.chatRoomId) {
+            navigate(`/chat/${response.data.chatRoomId}`);
+          }
+          return;
+        }
+      } catch (projectError) {
+        // If project join fails, try chatroom join
+        const response = await axios.post(`/api/chat/join-code/${joinCode.trim().toUpperCase()}`, {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        
+        if (response.data.success) {
+          alert('Successfully joined chat room!');
+          setShowJoinCodeModal(false);
+          setJoinCode('');
+          await fetchPersonalRooms();
+          if (response.data.room?._id) {
+            navigate(`/chat/${response.data.room._id}`);
+          }
+          return;
+        }
+      }
+      // If both fail
+      throw new Error('Invalid group code');
+    } catch (error) {
+      alert('Failed to join: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setJoiningCode(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showInviteModal && selectedProject?._id && !projectGroupCode) {
+      fetchProjectGroupCode();
+    }
+  }, [showInviteModal, selectedProject?._id]);
+
   if (loading) {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
@@ -208,6 +289,13 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              <button
+                onClick={() => setShowJoinCodeModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+              >
+                <Key size={20} />
+                Join via Code
+              </button>
               <button
                 onClick={() => setShowPersonalRoomModal(true)}
                 className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
@@ -435,6 +523,32 @@ export default function Dashboard() {
 
             <div className="px-6 pb-6 overflow-y-auto flex-1">
               <div className="space-y-4">
+              {/* Current Contributors */}
+              {selectedProject?.members && selectedProject.members.length > 0 && (
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                  <div className="flex items-center gap-3 mb-3">
+                    <Users className="text-primary-600" size={20} />
+                    <h4 className="font-semibold text-gray-900">Current Contributors ({selectedProject.members.length})</h4>
+                  </div>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {selectedProject.members.map((member) => {
+                      const memberData = typeof member.user === 'object' ? member.user : { username: 'User', avatar: null };
+                      return (
+                        <div key={member.user?._id || member.user} className="flex items-center gap-2 text-sm">
+                          <img
+                            src={memberData.avatar || `https://ui-avatars.com/api/?name=${memberData.username}`}
+                            alt={memberData.username}
+                            className="w-6 h-6 rounded-full"
+                          />
+                          <span className="text-gray-700">{memberData.username}</span>
+                          <span className="text-xs text-gray-500">({member.role})</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Email Invitation */}
               <div className="border border-gray-200 rounded-lg p-4">
                 <div className="flex items-center gap-3 mb-3">
@@ -446,16 +560,59 @@ export default function Dashboard() {
                     type="email"
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleInviteViaEmail()}
                     placeholder="email@example.com"
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   <button
                     onClick={handleInviteViaEmail}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                   >
                     Send
                   </button>
                 </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Enter email and click Send to copy invite link and open email client
+                </p>
+              </div>
+
+              {/* Group Code Invitation */}
+              <div className="border border-gray-200 rounded-lg p-4 bg-gradient-to-br from-primary-50 to-blue-50">
+                <div className="flex items-center gap-3 mb-3">
+                  <Key className="text-primary-600" size={20} />
+                  <h4 className="font-semibold text-gray-900">Group Code</h4>
+                </div>
+                <p className="text-sm text-gray-600 mb-3">
+                  Share this code with anyone to let them join instantly!
+                </p>
+                {projectGroupCode ? (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 px-4 py-3 bg-white border-2 border-primary-300 rounded-lg text-center">
+                      <div className="text-2xl font-bold text-primary-700 font-mono tracking-wider">
+                        {projectGroupCode}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleCopyGroupCode(projectGroupCode)}
+                      className="px-4 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                      title="Copy code"
+                    >
+                      <Copy size={20} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={fetchProjectGroupCode}
+                    className="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                  >
+                    Generate Group Code
+                  </button>
+                )}
+                {projectGroupCode && (
+                  <p className="text-xs text-gray-500 mt-2 text-center">
+                    Share code: {projectGroupCode}
+                  </p>
+                )}
               </div>
 
               {/* GitHub Invitation */}
@@ -465,13 +622,24 @@ export default function Dashboard() {
                   <h4 className="font-semibold text-gray-900">GitHub Contributors</h4>
                 </div>
                 <p className="text-sm text-gray-600 mb-3">
-                  All GitHub contributors have been automatically invited!
+                  All GitHub contributors have been automatically invited! View them in the chat room.
                 </p>
                 <button
-                  onClick={() => navigate(`/chat/${selectedProject.chatRoom}`)}
-                  className="w-full px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (selectedProject?.chatRoom) {
+                      const chatRoomId = selectedProject.chatRoom;
+                      setShowInviteModal(false);
+                      setSelectedProject(null);
+                      navigate(`/chat/${chatRoomId}`);
+                    } else {
+                      alert('Chat room not available. Please try again.');
+                    }
+                  }}
+                  className="w-full px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
                 >
-                  View Contributors
+                  View Contributors in Chat
                 </button>
               </div>
 
@@ -544,6 +712,62 @@ export default function Dashboard() {
                 className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
               >
                 Do it Later
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Join via Code Modal */}
+      {showJoinCodeModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-2xl font-bold text-gray-900">Join via Group Code</h3>
+              <button
+                onClick={() => {
+                  setShowJoinCodeModal(false);
+                  setJoinCode('');
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-6">
+              Enter the 6-character group code to join a project or chat room.
+            </p>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Group Code
+              </label>
+              <input
+                type="text"
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase().slice(0, 6))}
+                placeholder="ABCDEF"
+                className="w-full px-4 py-3 border-2 border-primary-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-center text-2xl font-bold font-mono tracking-wider uppercase"
+                autoFocus
+                maxLength={6}
+                onKeyPress={(e) => e.key === 'Enter' && handleJoinViaCode()}
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleJoinViaCode}
+                disabled={!joinCode.trim() || joiningCode}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
+              >
+                {joiningCode ? 'Joining...' : 'Join'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowJoinCodeModal(false);
+                  setJoinCode('');
+                }}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
               </button>
             </div>
           </div>

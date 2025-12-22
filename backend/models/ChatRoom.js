@@ -133,6 +133,11 @@ const chatRoomSchema = new mongoose.Schema({
       type: Boolean,
       default: true
     }
+  },
+  groupCode: {
+    type: String,
+    unique: true,
+    sparse: true
   }
 }, {
   timestamps: true

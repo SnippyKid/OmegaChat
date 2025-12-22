@@ -212,6 +212,34 @@ router.get('/room/:roomId', authenticateToken, async (req, res) => {
   }
 });
 
+// Helper function to generate unique group code
+async function generateGroupCode(model, fieldName = 'groupCode') {
+  const crypto = (await import('crypto')).default;
+  let code;
+  let exists = true;
+  while (exists) {
+    // Generate a 6-character alphanumeric code (uppercase, excluding confusing characters)
+    code = crypto.randomBytes(3).toString('hex').toUpperCase().slice(0, 6);
+    const existing = await model.findOne({ [fieldName]: code });
+    exists = !!existing;
+  }
+  return code;
+}
+
+// Helper function to generate unique group code
+async function generateGroupCode(model, fieldName = 'groupCode') {
+  const crypto = (await import('crypto')).default;
+  let code;
+  let exists = true;
+  while (exists) {
+    // Generate a 6-character alphanumeric code (uppercase, excluding confusing characters)
+    code = crypto.randomBytes(3).toString('hex').toUpperCase().slice(0, 6);
+    const existing = await model.findOne({ [fieldName]: code });
+    exists = !!existing;
+  }
+  return code;
+}
+
 // Create personal chatroom (no project/repository)
 router.post('/personal/create', authenticateToken, async (req, res) => {
   try {
@@ -222,12 +250,16 @@ router.post('/personal/create', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Chat room name is required' });
     }
     
+    // Generate group code for personal chatroom
+    const groupCode = await generateGroupCode(ChatRoom);
+    
     // Create personal chatroom
     const chatRoom = new ChatRoom({
       name: name.trim(),
       members: [req.userId],
       project: null,
-      repository: null
+      repository: null,
+      groupCode: groupCode
     });
     
     await chatRoom.save();
@@ -968,6 +1000,110 @@ router.post('/github/webhook', async (req, res) => {
   } catch (error) {
     console.error('Error processing GitHub webhook:', error);
     res.status(500).json({ error: 'Failed to process webhook' });
+  }
+});
+
+// Get or generate group code for a chatroom
+router.get('/room/:roomId/group-code', authenticateToken, async (req, res) => {
+  try {
+    const room = await ChatRoom.findById(req.params.roomId);
+    
+    if (!room) {
+      return res.status(404).json({ error: 'Chat room not found' });
+    }
+    
+    // Check if user is member
+    const isMember = room.members.some(member => {
+      const memberId = typeof member === 'object' ? member._id.toString() : member.toString();
+      return memberId === req.userId.toString();
+    });
+    
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this room' });
+    }
+    
+    // Generate code if it doesn't exist
+    if (!room.groupCode) {
+      room.groupCode = await generateGroupCode(ChatRoom);
+      await room.save();
+    }
+    
+    res.json({ 
+      success: true, 
+      groupCode: room.groupCode,
+      inviteLink: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/join-code/${room.groupCode}`
+    });
+  } catch (error) {
+    console.error('Error getting group code:', error);
+    res.status(500).json({ error: 'Failed to get group code' });
+  }
+});
+
+// Join chatroom via group code
+router.post('/join-code/:groupCode', authenticateToken, async (req, res) => {
+  try {
+    const { groupCode } = req.params;
+    const User = (await import('../models/User.js')).default;
+    const user = await User.findById(req.userId);
+    
+    // Find chatroom by group code
+    const chatRoom = await ChatRoom.findOne({ groupCode: groupCode.toUpperCase() })
+      .populate('project', 'name githubRepo');
+    
+    if (!chatRoom) {
+      return res.status(404).json({ error: 'Invalid group code. Chat room not found.' });
+    }
+    
+    // Check if user is already a member
+    const isMember = chatRoom.members.some(member => {
+      const memberId = typeof member === 'object' ? member._id.toString() : member.toString();
+      return memberId === req.userId.toString();
+    });
+    
+    if (isMember) {
+      return res.json({ 
+        success: true, 
+        message: 'You are already a member of this chat room',
+        room: chatRoom
+      });
+    }
+    
+    // Add user to chatroom
+    chatRoom.members.push(req.userId);
+    await chatRoom.save();
+    
+    // If chatroom has a project, add user to project as well
+    if (chatRoom.project) {
+      const Project = (await import('../models/Project.js')).default;
+      const project = await Project.findById(chatRoom.project._id || chatRoom.project);
+      
+      if (project && !project.members.some(m => m.user.toString() === req.userId)) {
+        project.members.push({
+          user: req.userId,
+          role: 'contributor'
+        });
+        await project.save();
+        
+        // Add project to user's projects list
+        if (!user.projects.some(p => p.toString() === project._id.toString())) {
+          user.projects.push(project._id);
+          await user.save();
+        }
+      }
+    }
+    
+    const populatedRoom = await ChatRoom.findById(chatRoom._id)
+      .populate('members', 'username avatar online')
+      .populate('project', 'name githubRepo');
+    
+    res.json({ 
+      success: true, 
+      message: 'Successfully joined chat room!',
+      room: populatedRoom
+    });
+  } catch (error) {
+    console.error('Error joining chatroom via group code:', error);
+    res.status(500).json({ error: 'Failed to join chatroom: ' + error.message });
   }
 });
 

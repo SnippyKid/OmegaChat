@@ -197,9 +197,42 @@ router.get('/repositories', async (req, res) => {
       return res.status(401).json({ error: 'User not found' });
     }
     
-    // Return repositories from user document
+    // If user has GitHub token, fetch fresh repositories from GitHub API
+    if (user.githubToken) {
+      try {
+        const reposResponse = await axios.get('https://api.github.com/user/repos', {
+          headers: { Authorization: `token ${user.githubToken}` },
+          params: {
+            per_page: 100,
+            sort: 'updated',
+            type: 'all' // Include both owned and contributed repos
+          }
+        });
+        
+        const repositories = reposResponse.data.map(repo => ({
+          name: repo.name,
+          fullName: repo.full_name,
+          url: repo.html_url,
+          private: repo.private,
+          description: repo.description,
+          updatedAt: repo.updated_at
+        }));
+        
+        // Update user's repositories cache
+        user.repositories = repositories;
+        await user.save();
+        
+        return res.json({ repositories });
+      } catch (githubError) {
+        console.error('Error fetching from GitHub API:', githubError.message);
+        // Fall back to cached repositories if GitHub API fails
+      }
+    }
+    
+    // Return repositories from user document (cached or empty)
     res.json({ repositories: user.repositories || [] });
   } catch (error) {
+    console.error('Error fetching repositories:', error);
     res.status(401).json({ error: 'Invalid token' });
   }
 });

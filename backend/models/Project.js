@@ -38,6 +38,11 @@ const projectSchema = new mongoose.Schema({
       type: Boolean,
       default: false
     }
+  },
+  groupCode: {
+    type: String,
+    unique: true,
+    sparse: true
   }
 }, {
   timestamps: true

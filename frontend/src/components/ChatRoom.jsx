@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
@@ -92,14 +92,18 @@ export default function ChatRoom() {
         }
         return prev;
       });
-      scrollToBottom();
+      // Use setTimeout to ensure DOM has updated
+      setTimeout(() => scrollToBottom(), 100);
     });
 
     newSocket.on('ai_code_generated', (data) => {
       console.log('🤖 Received AI code generated event:', data);
       if (data.message) {
-        setMessages(prev => [...prev, data.message]);
-        scrollToBottom();
+        setMessages(prev => {
+          const exists = prev.some(msg => msg._id === data.message._id);
+          return exists ? prev : [...prev, data.message];
+        });
+        setTimeout(() => scrollToBottom(), 100);
       } else {
         console.error('❌ AI code generated event missing message:', data);
       }
@@ -109,8 +113,11 @@ export default function ChatRoom() {
     newSocket.on('dk_bot_response', (data) => {
       console.log('📊 Received DK bot response:', data);
       if (data.message) {
-        setMessages(prev => [...prev, data.message]);
-        scrollToBottom();
+        setMessages(prev => {
+          const exists = prev.some(msg => msg._id === data.message._id);
+          return exists ? prev : [...prev, data.message];
+        });
+        setTimeout(() => scrollToBottom(), 100);
       }
     });
 
@@ -118,8 +125,11 @@ export default function ChatRoom() {
     newSocket.on('chaiwala_welcome', (data) => {
       console.log('☕ Received ChaiWala welcome:', data);
       if (data.message) {
-        setMessages(prev => [...prev, data.message]);
-        scrollToBottom();
+        setMessages(prev => {
+          const exists = prev.some(msg => msg._id === data.message._id);
+          return exists ? prev : [...prev, data.message];
+        });
+        setTimeout(() => scrollToBottom(), 100);
       }
     });
 
@@ -212,7 +222,7 @@ export default function ChatRoom() {
         recognitionRef.current = null;
       }
     };
-  }, [roomId, token]);
+  }, [roomId, token, scrollToBottom]);
 
   const fetchMessages = async () => {
     try {
@@ -427,9 +437,9 @@ export default function ChatRoom() {
     }
   };
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   const handleSendMessage = () => {
     if (!inputMessage.trim() || !socket) return;

@@ -4,8 +4,22 @@ import ChatRoom from '../models/ChatRoom.js';
 import User from '../models/User.js';
 import { authenticateToken } from '../middleware/auth.js';
 import axios from 'axios';
+import crypto from 'crypto';
 
 const router = express.Router();
+
+// Helper function to generate unique group code
+async function generateGroupCode(model, fieldName = 'groupCode') {
+  let code;
+  let exists = true;
+  while (exists) {
+    // Generate a 6-character alphanumeric code (uppercase, excluding confusing characters)
+    code = crypto.randomBytes(3).toString('hex').toUpperCase().slice(0, 6);
+    const existing = await model.findOne({ [fieldName]: code });
+    exists = !!existing;
+  }
+  return code;
+}
 
 // Get user's projects
 router.get('/my-projects', authenticateToken, async (req, res) => {
@@ -91,17 +105,23 @@ router.post('/create', authenticateToken, async (req, res) => {
       });
       await project.save();
       
+      // Generate group codes
+      const projectGroupCode = await generateGroupCode(Project);
+      const chatRoomGroupCode = await generateGroupCode(ChatRoom);
+      
       // Now create chatroom with project reference
       const chatRoom = new ChatRoom({
         name: `${repo.name} Chat`,
         project: project._id,
         repository: repo.full_name,
-        members: [req.userId]
+        members: [req.userId],
+        groupCode: chatRoomGroupCode
       });
       await chatRoom.save();
       
-      // Update project with chatroom reference
+      // Update project with chatroom reference and group code
       project.chatRoom = chatRoom._id;
+      project.groupCode = projectGroupCode;
       await project.save();
       
       // Invite all contributors to both project and chatroom
@@ -133,25 +153,60 @@ async function inviteContributorsToProjectAndChatroom(contributors, project, cha
       let dbUser = await User.findOne({ username: contributor.login });
       
       if (!dbUser) {
-        // Fetch GitHub user details
-        const githubUserResponse = await axios.get(
-          `https://api.github.com/users/${contributor.login}`,
-          {
-            headers: { Authorization: `token ${githubToken}` }
+        try {
+          // Fetch GitHub user details
+          const githubUserResponse = await axios.get(
+            `https://api.github.com/users/${contributor.login}`,
+            {
+              headers: { Authorization: `token ${githubToken}` }
+            }
+          );
+          
+          const githubUser = githubUserResponse.data;
+          
+          // Check if user with same githubId exists (in case username changed)
+          dbUser = await User.findOne({ githubId: githubUser.id.toString() });
+          
+          if (!dbUser) {
+            // Create new user - check if email is public, otherwise use placeholder
+            const userEmail = githubUser.email || `${contributor.login}@users.noreply.github.com`;
+            
+            // Check for duplicate username/email
+            const existingUser = await User.findOne({ 
+              $or: [
+                { username: githubUser.login },
+                { email: userEmail }
+              ]
+            });
+            
+            if (existingUser) {
+              // Use existing user if found
+              dbUser = existingUser;
+            } else {
+              // Create new user
+              dbUser = new User({
+                githubId: githubUser.id.toString(),
+                username: githubUser.login,
+                email: userEmail,
+                avatar: githubUser.avatar_url,
+                online: false
+              });
+              await dbUser.save();
+              console.log(`✅ Created new user: ${githubUser.login}`);
+            }
+          } else {
+            // Update user info if needed
+            if (dbUser.username !== githubUser.login || dbUser.avatar !== githubUser.avatar_url) {
+              dbUser.username = githubUser.login;
+              dbUser.avatar = githubUser.avatar_url;
+              await dbUser.save();
+            }
           }
-        );
-        
-        const githubUser = githubUserResponse.data;
-        
-        // Create new user
-        dbUser = new User({
-          githubId: githubUser.id.toString(),
-          username: githubUser.login,
-          email: githubUser.email,
-          avatar: githubUser.avatar_url,
-          online: false
-        });
-        await dbUser.save();
+        } catch (userError) {
+          console.error(`Error creating/updating user for ${contributor.login}:`, userError.message);
+          // Skip this contributor and continue
+          continue;
+        }
       }
       
       // Add to project members if not already a member
@@ -192,6 +247,101 @@ router.get('/:projectId', authenticateToken, async (req, res) => {
     res.json({ project });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch project' });
+  }
+});
+
+// Get or generate group code for a project
+router.get('/:projectId/group-code', authenticateToken, async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.projectId);
+    
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Check if user is project member
+    const isMember = project.members.some(m => m.user.toString() === req.userId);
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this project' });
+    }
+    
+    // Generate code if it doesn't exist
+    if (!project.groupCode) {
+      project.groupCode = await generateGroupCode(Project);
+      await project.save();
+    }
+    
+    res.json({ 
+      success: true, 
+      groupCode: project.groupCode,
+      inviteLink: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/join-code/${project.groupCode}`
+    });
+  } catch (error) {
+    console.error('Error getting group code:', error);
+    res.status(500).json({ error: 'Failed to get group code' });
+  }
+});
+
+// Join project via group code
+router.post('/join-code/:groupCode', authenticateToken, async (req, res) => {
+  try {
+    const { groupCode } = req.params;
+    const user = await User.findById(req.userId);
+    
+    // Find project by group code
+    const project = await Project.findOne({ groupCode: groupCode.toUpperCase() })
+      .populate('chatRoom');
+    
+    if (!project) {
+      return res.status(404).json({ error: 'Invalid group code. Project not found.' });
+    }
+    
+    // Check if user is already a member
+    const isMember = project.members.some(m => m.user.toString() === req.userId);
+    
+    if (isMember) {
+      return res.json({ 
+        success: true, 
+        message: 'You are already a member of this project',
+        project,
+        chatRoomId: project.chatRoom._id || project.chatRoom
+      });
+    }
+    
+    // Add user to project
+    project.members.push({
+      user: req.userId,
+      role: 'contributor'
+    });
+    await project.save();
+    
+    // Add user to chatroom if it exists
+    if (project.chatRoom) {
+      const chatRoom = await ChatRoom.findById(project.chatRoom._id || project.chatRoom);
+      if (chatRoom && !chatRoom.members.some(m => m.toString() === req.userId)) {
+        chatRoom.members.push(req.userId);
+        await chatRoom.save();
+      }
+    }
+    
+    // Add project to user's projects list
+    if (!user.projects.some(p => p.toString() === project._id.toString())) {
+      user.projects.push(project._id);
+      await user.save();
+    }
+    
+    await project.populate('members.user', 'username avatar');
+    await project.populate('chatRoom');
+    
+    res.json({ 
+      success: true, 
+      message: 'Successfully joined project!',
+      project,
+      chatRoomId: project.chatRoom._id || project.chatRoom
+    });
+  } catch (error) {
+    console.error('Error joining project via group code:', error);
+    res.status(500).json({ error: 'Failed to join project: ' + error.message });
   }
 });
 

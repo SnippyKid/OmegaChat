@@ -14,6 +14,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/auth/callback" element={<AuthCallback />} />
           <Route path="/join/:projectId" element={<JoinProject />} />
+          <Route path="/join-code/:groupCode" element={<JoinViaCode />} />
           <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/chat/:roomId" element={<ProtectedRoute><ChatRoom /></ProtectedRoute>} />
         </Routes>
@@ -78,6 +79,51 @@ function JoinProject() {
   }, [user, token, loading, projectId, navigate]);
   
   return <div className="flex items-center justify-center h-screen">Joining project...</div>;
+}
+
+function JoinViaCode() {
+  const { groupCode } = useParams();
+  const navigate = useNavigate();
+  const { user, token, loading } = useAuth();
+  
+  useEffect(() => {
+    if (loading) return;
+    
+    if (user && token) {
+      // Try joining as project first
+      axios.post(`/api/projects/join-code/${groupCode}`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      .then(response => {
+        if (response.data.success && response.data.chatRoomId) {
+          navigate(`/chat/${response.data.chatRoomId}`);
+        } else {
+          navigate('/');
+        }
+      })
+      .catch(() => {
+        // If project join fails, try chatroom join
+        axios.post(`/api/chat/join-code/${groupCode}`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        .then(response => {
+          if (response.data.success && response.data.room?._id) {
+            navigate(`/chat/${response.data.room._id}`);
+          } else {
+            navigate('/');
+          }
+        })
+        .catch(() => {
+          navigate('/');
+        });
+      });
+    } else {
+      // User not logged in, redirect to login with return URL
+      navigate(`/login?redirect=/join-code/${groupCode}`);
+    }
+  }, [user, token, loading, groupCode, navigate]);
+  
+  return <div className="flex items-center justify-center h-screen">Joining via code...</div>;
 }
 
 export default App;
