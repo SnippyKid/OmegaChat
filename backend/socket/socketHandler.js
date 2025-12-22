@@ -1,0 +1,848 @@
+import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
+import ChatRoom from '../models/ChatRoom.js';
+import Project from '../models/Project.js';
+import { generateCodeSnippet } from '../services/aiService.js';
+import { getRepositoryContext } from '../services/githubService.js';
+import { getRepositoryStats, formatRepositoryStats, formatActivityNotification } from '../services/dkBotService.js';
+import { generateWelcomeMessage } from '../services/chaiwalaBotService.js';
+
+export function setupSocketIO(io) {
+  // Authentication middleware for Socket.io
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.handshake.auth.token;
+      if (!token) {
+        return next(new Error('Authentication error: No token'));
+      }
+      
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+      const user = await User.findById(decoded.userId);
+      
+      if (!user) {
+        return next(new Error('Authentication error: User not found'));
+      }
+      
+      socket.userId = user._id.toString();
+      socket.user = user;
+      next();
+    } catch (error) {
+      next(new Error('Authentication error: Invalid token'));
+    }
+  });
+
+  io.on('connection', async (socket) => {
+    console.log(`✅ User connected: ${socket.user.username} (${socket.userId})`);
+    
+    // Update user online status
+    await User.findByIdAndUpdate(socket.userId, { online: true, lastSeen: new Date() });
+    
+    // Join user's project rooms
+    const user = await User.findById(socket.userId).populate('projects');
+    if (user.projects) {
+      user.projects.forEach(project => {
+        if (project.chatRoom) {
+          socket.join(`room:${project.chatRoom}`);
+          console.log(`📦 User joined room: ${project.chatRoom}`);
+        }
+      });
+    }
+    
+    // Handle joining a room
+    socket.on('join_room', async (roomId) => {
+      const room = await ChatRoom.findById(roomId);
+      if (!room) {
+        return socket.emit('error', { message: 'Room not found' });
+      }
+      
+      // Check if user is a member (handle both ObjectId and string comparison)
+      const isMember = room.members.some(memberId => 
+        memberId.toString() === socket.userId.toString()
+      );
+      
+      if (isMember) {
+        socket.join(`room:${roomId}`);
+        socket.emit('room_joined', { roomId });
+        socket.to(`room:${roomId}`).emit('user_joined', {
+          userId: socket.userId,
+          username: socket.user.username
+        });
+        
+        // Send ChaiWala welcome message to everyone in the room
+        try {
+          const welcomeContent = generateWelcomeMessage(socket.user.username, room.name);
+          
+          const welcomeMessage = {
+            user: null, // Will be set to ChaiWala bot
+            content: welcomeContent,
+            type: 'chaiwala_bot'
+          };
+          
+          room.messages.push(welcomeMessage);
+          room.lastMessage = new Date();
+          await room.save();
+          
+          const updatedRoom = await ChatRoom.findById(roomId)
+            .populate('messages.user', 'username avatar');
+          
+          const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+          
+          // Override user info for ChaiWala bot messages
+          savedMessage.user = {
+            _id: 'chaiwala-bot',
+            username: 'ChaiWala',
+            avatar: '/avatars/chaiwala-avatar.png'
+          };
+          
+          // Emit to all users in the room (including the person who just joined)
+          io.to(`room:${roomId}`).emit('chaiwala_welcome', {
+            message: savedMessage,
+            roomId,
+            newMember: socket.user.username
+          });
+          
+          console.log(`☕ ChaiWala welcomed ${socket.user.username} in room ${roomId}`);
+        } catch (error) {
+          console.error('Error sending ChaiWala welcome:', error);
+          // Don't block the join process if welcome fails
+        }
+        
+        console.log(`✅ User ${socket.user.username} joined room ${roomId}`);
+      } else {
+        socket.emit('error', { message: 'Not a member of this room' });
+      }
+    });
+    
+    // Handle leaving a room
+    socket.on('leave_room', (roomId) => {
+      socket.leave(`room:${roomId}`);
+      socket.to(`room:${roomId}`).emit('user_left', {
+        userId: socket.userId,
+        username: socket.user.username
+      });
+    });
+    
+    // Handle text messages
+    socket.on('send_message', async (data) => {
+      try {
+        const { roomId, content, replyTo } = data;
+        
+        const room = await ChatRoom.findById(roomId);
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const isMember = room.members.some(memberId => 
+          memberId.toString() === socket.userId.toString()
+        );
+        
+        if (!isMember) {
+          return socket.emit('error', { message: 'Not a member of this room' });
+        }
+        
+        const message = {
+          user: socket.userId,
+          content,
+          type: 'text',
+          replyTo: replyTo || null,
+          reactions: [],
+          starredBy: [],
+          readBy: []
+        };
+        
+        room.messages.push(message);
+        room.lastMessage = new Date();
+        await room.save();
+        
+        // Reload room to get the saved message with _id and timestamps
+        const updatedRoom = await ChatRoom.findById(roomId)
+          .populate('messages.user', 'username avatar')
+          .populate('messages.reactions.users', 'username avatar')
+          .populate('messages.starredBy', 'username avatar');
+        
+        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        
+        // Ensure arrays are initialized
+        if (!savedMessage.reactions) savedMessage.reactions = [];
+        if (!savedMessage.readBy) savedMessage.readBy = [];
+        if (!savedMessage.starredBy) savedMessage.starredBy = [];
+        
+        // Emit to all users in the room (including sender)
+        io.to(`room:${roomId}`).emit('new_message', {
+          message: savedMessage,
+          roomId
+        });
+        
+        console.log(`📨 Message sent in room ${roomId} by ${socket.user.username}`);
+      } catch (error) {
+        console.error('Error sending message:', error);
+        socket.emit('error', { message: 'Failed to send message' });
+      }
+    });
+    
+    // Handle AI code generation (@omega trigger)
+    socket.on('ai_generate_code', async (data) => {
+      try {
+        const { roomId, prompt, context } = data;
+        
+        const room = await ChatRoom.findById(roomId);
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const isMember = room.members.some(memberId => 
+          memberId.toString() === socket.userId.toString()
+        );
+        
+        if (!isMember) {
+          return socket.emit('error', { message: 'Not a member of this room' });
+        }
+        
+        // Emit typing indicator to all users (including sender)
+        io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
+        
+        console.log(`🤖 Generating AI code for: ${prompt.substring(0, 50)}...`);
+        
+        // Get repository context if available
+        let repoContext = '';
+        try {
+          if (room.project) {
+            const project = await Project.findById(room.project);
+            if (project && project.githubRepo && project.githubRepo.fullName) {
+              const user = await User.findById(socket.userId);
+              if (user && user.githubToken) {
+                console.log('📂 Fetching repository context...');
+                const repoInfo = await getRepositoryContext(
+                  project.githubRepo.fullName,
+                  user.githubToken
+                );
+                
+                // Format repository context for AI (limit size to avoid token limits)
+                const fileContents = repoInfo.files
+                  .map(f => {
+                    // Limit each file to 1500 chars to stay within token limits
+                    const content = f.content.length > 1500 
+                      ? f.content.substring(0, 1500) + '... (truncated)'
+                      : f.content;
+                    return `\n--- ${f.path} ---\n${content}`;
+                  })
+                  .join('\n\n');
+                
+                // Limit total context size (approximately 8000 chars max)
+                const maxContextLength = 8000;
+                const contextHeader = `Repository Context:
+- Repository: ${repoInfo.name}
+- Description: ${repoInfo.description || 'N/A'}
+- Primary Language: ${repoInfo.language || 'N/A'}
+- Branch: ${repoInfo.branch}
+- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
+
+Key File Contents:`;
+
+                const fullContext = contextHeader + fileContents;
+                repoContext = fullContext.length > maxContextLength
+                  ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
+                  : fullContext;
+                console.log('✅ Repository context fetched');
+              }
+            }
+          } else if (room.repository) {
+            // Direct repository chatroom
+            const user = await User.findById(socket.userId);
+            if (user && user.githubToken) {
+              console.log('📂 Fetching repository context from room repository...');
+              const repoInfo = await getRepositoryContext(
+                room.repository,
+                user.githubToken
+              );
+              
+              // Format repository context for AI (limit size to avoid token limits)
+              const fileContents = repoInfo.files
+                .map(f => {
+                  // Limit each file to 1500 chars to stay within token limits
+                  const content = f.content.length > 1500 
+                    ? f.content.substring(0, 1500) + '... (truncated)'
+                    : f.content;
+                  return `\n--- ${f.path} ---\n${content}`;
+                })
+                .join('\n\n');
+              
+              // Limit total context size (approximately 8000 chars max)
+              const maxContextLength = 8000;
+              const contextHeader = `Repository Context:
+- Repository: ${repoInfo.name}
+- Description: ${repoInfo.description || 'N/A'}
+- Primary Language: ${repoInfo.language || 'N/A'}
+- Branch: ${repoInfo.branch}
+- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
+
+Key File Contents:`;
+
+              const fullContext = contextHeader + fileContents;
+              repoContext = fullContext.length > maxContextLength
+                ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
+                : fullContext;
+              console.log('✅ Repository context fetched');
+            }
+          }
+        } catch (repoError) {
+          console.log('⚠️ Could not fetch repository context:', repoError.message);
+          // Continue without repo context - not critical
+        }
+        
+        // Combine user context with repository context
+        const fullContext = repoContext ? `${repoContext}\n\n${context || ''}`.trim() : context;
+        
+        // Generate code using AI
+        let aiResponse;
+        try {
+          console.log('🚀 Starting AI generation...');
+          aiResponse = await generateCodeSnippet(prompt, fullContext);
+          console.log('✅ AI code generated successfully');
+          console.log('📊 Response summary:', {
+            codeLength: aiResponse.code?.length || 0,
+            language: aiResponse.language,
+            explanationLength: aiResponse.explanation?.length || 0
+          });
+        } catch (error) {
+          console.error('❌ AI generation failed:', error);
+          console.error('Error stack:', error.stack);
+          
+          // Send error message to user
+          const errorMessage = {
+            user: socket.userId,
+            content: `@omega: ${prompt}`,
+            type: 'text',
+            error: `AI generation failed: ${error.message || 'Unknown error'}`
+          };
+          
+          room.messages.push(errorMessage);
+          room.lastMessage = new Date();
+          await room.save();
+          
+          const updatedRoom = await ChatRoom.findById(roomId)
+            .populate('messages.user', 'username avatar');
+          
+          const savedError = updatedRoom.messages[updatedRoom.messages.length - 1];
+          
+          io.to(`room:${roomId}`).emit('new_message', {
+            message: savedError,
+            roomId
+          });
+          
+          // Also emit error to sender
+          socket.emit('error', { 
+            message: `AI generation failed: ${error.message}`,
+            details: error.stack 
+          });
+          
+          return;
+        }
+        
+        // Save the AI response message
+        const aiMessage = {
+          user: socket.userId, // Will be overridden to Omega AI
+          content: `@omega ${prompt}`,
+          type: 'ai_code',
+          aiPrompt: prompt,
+          aiResponse: {
+            code: aiResponse.code,
+            explanation: aiResponse.explanation,
+            language: aiResponse.language
+          }
+        };
+        
+        room.messages.push(aiMessage);
+        room.lastMessage = new Date();
+        await room.save();
+        
+        // Reload room to get the saved message with _id and timestamps
+        const updatedRoom = await ChatRoom.findById(roomId)
+          .populate('messages.user', 'username avatar');
+        
+        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        
+        // Override user info for AI messages to show as Omega AI
+        if (savedMessage.type === 'ai_code') {
+          savedMessage.user = {
+            _id: 'omega-ai',
+            username: 'Omega AI',
+            avatar: null
+          };
+        }
+        
+        // Emit AI response to all users in the room (including requester)
+        console.log('📤 Emitting AI response to room:', roomId);
+        console.log('📦 Message data:', {
+          type: savedMessage.type,
+          hasAiResponse: !!savedMessage.aiResponse,
+          codeLength: savedMessage.aiResponse?.code?.length || 0
+        });
+        
+        io.to(`room:${roomId}`).emit('ai_code_generated', {
+          message: savedMessage,
+          roomId
+        });
+        
+        console.log(`🤖 AI code generated and sent in room ${roomId} for ${socket.user.username}`);
+      } catch (error) {
+        console.error('Error generating AI code:', error);
+        socket.emit('error', { message: 'Failed to generate code' });
+      }
+    });
+    
+    // Handle voice messages
+    socket.on('send_voice_message', async (data) => {
+      try {
+        const { roomId, voiceUrl, duration } = data;
+        
+        const room = await ChatRoom.findById(roomId);
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const isMember = room.members.some(memberId => 
+          memberId.toString() === socket.userId.toString()
+        );
+        
+        if (!isMember) {
+          return socket.emit('error', { message: 'Not a member of this room' });
+        }
+        
+        const message = {
+          user: socket.userId,
+          content: 'Voice message',
+          type: 'voice',
+          voiceUrl,
+          duration
+        };
+        
+        room.messages.push(message);
+        room.lastMessage = new Date();
+        await room.save();
+        
+        // Reload room to get the saved message with _id and timestamps
+        const updatedRoom = await ChatRoom.findById(roomId)
+          .populate('messages.user', 'username avatar');
+        
+        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        
+        // Emit voice message to all users in the room
+        io.to(`room:${roomId}`).emit('new_message', {
+          message: savedMessage,
+          roomId
+        });
+        
+        console.log(`🎤 Voice message sent in room ${roomId} by ${socket.user.username}`);
+      } catch (error) {
+        console.error('Error sending voice message:', error);
+        socket.emit('error', { message: 'Failed to send voice message' });
+      }
+    });
+    
+    // Handle DK bot command
+    socket.on('dk_bot_command', async (data) => {
+      try {
+        const { roomId } = data;
+        
+        const room = await ChatRoom.findById(roomId);
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        // Check if room has a linked repository
+        let repoFullName = null;
+        let githubToken = null;
+        
+        if (room.project) {
+          const project = await Project.findById(room.project).populate('members.user');
+          if (project && project.githubRepo && project.githubRepo.fullName) {
+            repoFullName = project.githubRepo.fullName;
+            // Get token from project owner or first member
+            const owner = project.members.find(m => m.role === 'owner');
+            if (owner) {
+              const ownerUser = await User.findById(owner.user);
+              if (ownerUser && ownerUser.githubToken) {
+                githubToken = ownerUser.githubToken;
+              }
+            }
+            // Fallback to any member with token
+            if (!githubToken) {
+              for (const member of project.members) {
+                const memberUser = await User.findById(member.user);
+                if (memberUser && memberUser.githubToken) {
+                  githubToken = memberUser.githubToken;
+                  break;
+                }
+              }
+            }
+          }
+        } else if (room.repository) {
+          repoFullName = room.repository;
+          // Get token from room members
+          for (const memberId of room.members) {
+            const memberUser = await User.findById(memberId);
+            if (memberUser && memberUser.githubToken) {
+              githubToken = memberUser.githubToken;
+              break;
+            }
+          }
+        }
+        
+        if (!repoFullName || !githubToken) {
+          const errorMessage = {
+            user: socket.userId,
+            content: '@dk: Repository not linked or GitHub token not available. Please link a GitHub repository to this chatroom.',
+            type: 'dk_bot',
+            dkBotData: {
+              type: 'notification',
+              githubData: { error: 'No repository linked' }
+            }
+          };
+          
+          room.messages.push(errorMessage);
+          await room.save();
+          
+          const updatedRoom = await ChatRoom.findById(roomId)
+            .populate('messages.user', 'username avatar');
+          
+          const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+          savedMessage.user = {
+            _id: 'dk-bot',
+            username: 'DK',
+            avatar: '/avatars/dk-avatar.png'
+          };
+          
+          io.to(`room:${roomId}`).emit('dk_bot_response', {
+            message: savedMessage,
+            roomId
+          });
+          return;
+        }
+        
+        // Fetch repository stats
+        console.log(`📊 DK Bot: Fetching stats for ${repoFullName}`);
+        const stats = await getRepositoryStats(repoFullName, githubToken);
+        const formattedStats = formatRepositoryStats(stats);
+        
+        const dkMessage = {
+          user: socket.userId,
+          content: formattedStats,
+          type: 'dk_bot',
+          dkBotData: {
+            type: 'stats',
+            githubData: stats
+          }
+        };
+        
+        room.messages.push(dkMessage);
+        room.lastMessage = new Date();
+        await room.save();
+        
+        const updatedRoom = await ChatRoom.findById(roomId)
+          .populate('messages.user', 'username avatar');
+        
+        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        
+        // Override user info for DK bot messages
+        savedMessage.user = {
+          _id: 'dk-bot',
+          username: 'DK',
+          avatar: '/avatars/dk-avatar.png'
+        };
+        
+        io.to(`room:${roomId}`).emit('dk_bot_response', {
+          message: savedMessage,
+          roomId
+        });
+        
+        console.log(`📊 DK Bot stats sent in room ${roomId}`);
+      } catch (error) {
+        console.error('Error in DK bot command:', error);
+        socket.emit('error', { message: 'Failed to fetch repository stats: ' + error.message });
+      }
+    });
+    
+    // Handle typing indicator
+    socket.on('typing', (data) => {
+      const { roomId, isTyping } = data;
+      socket.to(`room:${roomId}`).emit('user_typing', {
+        userId: socket.userId,
+        username: socket.user.username,
+        isTyping,
+        roomId
+      });
+    });
+    
+    // Handle message edit
+    socket.on('edit_message', async (data) => {
+      try {
+        const { roomId, messageId, content } = data;
+        const room = await ChatRoom.findById(roomId);
+        
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const message = room.messages.id(messageId);
+        if (!message || message.user.toString() !== socket.userId.toString()) {
+          return socket.emit('error', { message: 'Message not found or not authorized' });
+        }
+        
+        // Save to edit history
+        if (!message.editHistory) {
+          message.editHistory = [];
+        }
+        message.editHistory.push({
+          content: message.content,
+          editedAt: new Date()
+        });
+        
+        message.content = content;
+        message.edited = true;
+        await room.save();
+        
+        const updatedRoom = await ChatRoom.findById(roomId)
+          .populate('messages.user', 'username avatar');
+        
+        const updatedMessage = updatedRoom.messages.id(messageId);
+        
+        io.to(`room:${roomId}`).emit('message_edited', {
+          message: updatedMessage,
+          roomId
+        });
+      } catch (error) {
+        console.error('Error editing message:', error);
+        socket.emit('error', { message: 'Failed to edit message' });
+      }
+    });
+
+    // Handle message delete
+    socket.on('delete_message', async (data) => {
+      try {
+        const { roomId, messageId } = data;
+        const room = await ChatRoom.findById(roomId);
+        
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const message = room.messages.id(messageId);
+        if (!message || message.user.toString() !== socket.userId.toString()) {
+          return socket.emit('error', { message: 'Message not found or not authorized' });
+        }
+        
+        message.deleted = true;
+        message.deletedAt = new Date();
+        message.content = '[Message deleted]';
+        
+        // Remove from pinned
+        if (room.pinnedMessages) {
+          room.pinnedMessages = room.pinnedMessages.filter(
+            id => id.toString() !== messageId
+          );
+        }
+        
+        await room.save();
+        
+        io.to(`room:${roomId}`).emit('message_deleted', {
+          messageId,
+          roomId
+        });
+      } catch (error) {
+        console.error('Error deleting message:', error);
+        socket.emit('error', { message: 'Failed to delete message' });
+      }
+    });
+
+    // Handle reaction
+    socket.on('toggle_reaction', async (data) => {
+      try {
+        const { roomId, messageId, emoji } = data;
+        const room = await ChatRoom.findById(roomId);
+        
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const message = room.messages.id(messageId);
+        if (!message) {
+          return socket.emit('error', { message: 'Message not found' });
+        }
+        
+        if (!message.reactions) {
+          message.reactions = [];
+        }
+        
+        let reaction = message.reactions.find(r => r.emoji === emoji);
+        if (!reaction) {
+          reaction = { emoji, users: [] };
+          message.reactions.push(reaction);
+        }
+        
+        const userIndex = reaction.users.findIndex(
+          userId => userId.toString() === socket.userId.toString()
+        );
+        
+        if (userIndex === -1) {
+          reaction.users.push(socket.userId);
+        } else {
+          reaction.users.splice(userIndex, 1);
+          if (reaction.users.length === 0) {
+            message.reactions = message.reactions.filter(r => r.emoji !== emoji);
+          }
+        }
+        
+        await room.save();
+        
+        const updatedRoom = await ChatRoom.findById(roomId)
+          .populate('messages.user', 'username avatar')
+          .populate('messages.reactions.users', 'username avatar');
+        
+        const updatedMessage = updatedRoom.messages.id(messageId);
+        
+        io.to(`room:${roomId}`).emit('reaction_updated', {
+          message: updatedMessage,
+          roomId
+        });
+      } catch (error) {
+        console.error('Error toggling reaction:', error);
+        socket.emit('error', { message: 'Failed to toggle reaction' });
+      }
+    });
+
+    // Handle pin/unpin
+    socket.on('toggle_pin', async (data) => {
+      try {
+        const { roomId, messageId } = data;
+        const room = await ChatRoom.findById(roomId);
+        
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        if (!room.pinnedMessages) {
+          room.pinnedMessages = [];
+        }
+        
+        const isPinned = room.pinnedMessages.some(
+          id => id.toString() === messageId
+        );
+        
+        if (isPinned) {
+          room.pinnedMessages = room.pinnedMessages.filter(
+            id => id.toString() !== messageId
+          );
+        } else {
+          room.pinnedMessages.push(messageId);
+        }
+        
+        await room.save();
+        
+        io.to(`room:${roomId}`).emit('pin_updated', {
+          roomId,
+          messageId,
+          pinned: !isPinned,
+          pinnedMessages: room.pinnedMessages
+        });
+      } catch (error) {
+        console.error('Error toggling pin:', error);
+        socket.emit('error', { message: 'Failed to toggle pin' });
+      }
+    });
+
+    // Handle star/unstar
+    socket.on('toggle_star', async (data) => {
+      try {
+        const { roomId, messageId } = data;
+        const room = await ChatRoom.findById(roomId);
+        
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
+        
+        const message = room.messages.id(messageId);
+        if (!message) {
+          return socket.emit('error', { message: 'Message not found' });
+        }
+        
+        if (!message.starredBy) {
+          message.starredBy = [];
+        }
+        
+        const isStarred = message.starredBy.some(
+          userId => userId.toString() === socket.userId.toString()
+        );
+        
+        if (isStarred) {
+          message.starredBy = message.starredBy.filter(
+            userId => userId.toString() !== socket.userId.toString()
+          );
+        } else {
+          message.starredBy.push(socket.userId);
+        }
+        
+        await room.save();
+        
+        io.to(`room:${roomId}`).emit('star_updated', {
+          roomId,
+          messageId,
+          starred: !isStarred
+        });
+      } catch (error) {
+        console.error('Error toggling star:', error);
+        socket.emit('error', { message: 'Failed to toggle star' });
+      }
+    });
+
+    // Handle mark as read
+    socket.on('mark_read', async (data) => {
+      try {
+        const { roomId, messageId } = data;
+        const room = await ChatRoom.findById(roomId);
+        
+        if (!room) {
+          return;
+        }
+        
+        const message = room.messages.id(messageId);
+        if (!message) {
+          return;
+        }
+        
+        if (!message.readBy) {
+          message.readBy = [];
+        }
+        
+        message.readBy = message.readBy.filter(
+          read => read.user.toString() !== socket.userId.toString()
+        );
+        
+        message.readBy.push({
+          user: socket.userId,
+          readAt: new Date()
+        });
+        
+        await room.save();
+        
+        // Emit to room
+        io.to(`room:${roomId}`).emit('message_read', {
+          roomId,
+          messageId,
+          userId: socket.userId
+        });
+      } catch (error) {
+        console.error('Error marking as read:', error);
+      }
+    });
+
+    // Handle disconnection
+    socket.on('disconnect', async () => {
+      console.log(`❌ User disconnected: ${socket.user.username}`);
+      await User.findByIdAndUpdate(socket.userId, { 
+        online: false, 
+        lastSeen: new Date() 
+      });
+    });
+  });
+}
