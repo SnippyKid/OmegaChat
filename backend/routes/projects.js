@@ -24,22 +24,75 @@ async function generateGroupCode(model, fieldName = 'groupCode') {
 // Get user's projects
 router.get('/my-projects', authenticateToken, async (req, res) => {
   try {
-    // Populate projects with members and the linked chatRoom (including chatRoom members)
-    const user = await User.findById(req.userId).populate({
-      path: 'projects',
-      populate: [
-        { path: 'members.user', select: 'username avatar' },
-        { 
-          path: 'chatRoom',
-          populate: { path: 'members', select: 'username avatar' }
-        }
-      ]
-    });
+    const user = await User.findById(req.userId);
     
-    res.json({ projects: user.projects || [] });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+    
+    // Populate projects with members and all chatrooms
+    try {
+      await user.populate({
+        path: 'projects',
+        populate: [
+          { path: 'members.user', select: 'username avatar' },
+          { 
+            path: 'chatRoom',
+            populate: { path: 'members', select: 'username avatar' }
+          },
+          {
+            path: 'chatRooms',
+            populate: { path: 'members', select: 'username avatar' }
+          }
+        ]
+      });
+    } catch (populateError) {
+      console.error('Error populating projects:', populateError);
+      // Try without chatRooms if it fails
+      try {
+        await user.populate({
+          path: 'projects',
+          populate: [
+            { path: 'members.user', select: 'username avatar' },
+            { 
+              path: 'chatRoom',
+              populate: { path: 'members', select: 'username avatar' }
+            }
+          ]
+        });
+        // Manually populate chatRooms for each project
+        for (const project of user.projects) {
+          if (project.chatRooms && project.chatRooms.length > 0) {
+            try {
+              await project.populate({
+                path: 'chatRooms',
+                populate: { path: 'members', select: 'username avatar' }
+              });
+            } catch (err) {
+              console.warn('Error populating chatRooms for project:', project._id, err);
+            }
+          }
+        }
+      } catch (fallbackError) {
+        console.error('Error in fallback populate:', fallbackError);
+        // Continue without full population
+      }
+    }
+    
+    res.json({ 
+      success: true,
+      projects: user.projects || [] 
+    });
   } catch (error) {
     console.error('Error fetching user projects:', error);
-    res.status(500).json({ error: 'Failed to fetch projects' });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch projects: ' + (error.message || 'Unknown error') 
+    });
   }
 });
 
@@ -47,36 +100,87 @@ router.get('/my-projects', authenticateToken, async (req, res) => {
 router.post('/create', authenticateToken, async (req, res) => {
   try {
     const { repoFullName } = req.body;
+    
+    if (!repoFullName || !repoFullName.trim()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Repository full name is required (e.g., owner/repo)' 
+      });
+    }
+    
     const user = await User.findById(req.userId);
     
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+    
     if (!user.githubToken) {
-      return res.status(400).json({ error: 'GitHub token not available' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'GitHub token not available. Please reconnect your GitHub account.' 
+      });
     }
     
     // Fetch repo details from GitHub
-    const repoResponse = await axios.get(
-      `https://api.github.com/repos/${repoFullName}`,
-      {
-        headers: { Authorization: `token ${user.githubToken}` }
+    let repo;
+    try {
+      const repoResponse = await axios.get(
+        `https://api.github.com/repos/${repoFullName.trim()}`,
+        {
+          headers: { Authorization: `token ${user.githubToken}` },
+          timeout: 10000
+        }
+      );
+      repo = repoResponse.data;
+    } catch (githubError) {
+      console.error('GitHub API error:', githubError);
+      if (githubError.response?.status === 404) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'Repository not found. Please check the repository name and ensure you have access.' 
+        });
+      } else if (githubError.response?.status === 403) {
+        return res.status(403).json({ 
+          success: false,
+          error: 'GitHub API rate limit exceeded or access denied. Please try again later.' 
+        });
       }
-    );
+      throw new Error('Failed to fetch repository from GitHub: ' + (githubError.message || 'Unknown error'));
+    }
     
-    const repo = repoResponse.data;
-    
-    // Fetch contributors from GitHub
-    const contributorsResponse = await axios.get(
-      `https://api.github.com/repos/${repoFullName}/contributors`,
-      {
-        headers: { Authorization: `token ${user.githubToken}` }
-      }
-    );
-    
-    const contributors = contributorsResponse.data;
+    // Fetch contributors from GitHub (optional, don't fail if this fails)
+    let contributors = [];
+    try {
+      const contributorsResponse = await axios.get(
+        `https://api.github.com/repos/${repoFullName.trim()}/contributors`,
+        {
+          headers: { Authorization: `token ${user.githubToken}` },
+          timeout: 10000
+        }
+      );
+      contributors = contributorsResponse.data || [];
+    } catch (contribError) {
+      console.warn('Failed to fetch contributors (non-critical):', contribError.message);
+      // Continue without contributors - not critical
+    }
     
     // Check if project already exists
     let project = await Project.findOne({ 'githubRepo.fullName': repo.full_name });
     
     if (project) {
+      // Initialize chatRooms array if it doesn't exist (for backward compatibility)
+      if (!project.chatRooms || project.chatRooms.length === 0) {
+        if (project.chatRoom) {
+          project.chatRooms = [project.chatRoom];
+        } else {
+          project.chatRooms = [];
+        }
+        await project.save();
+      }
+      
       // Add user to project if not already member
       const isMember = project.members.some(m => m.user.toString() === req.userId);
       if (!isMember) {
@@ -125,7 +229,9 @@ router.post('/create', authenticateToken, async (req, res) => {
       await chatRoom.save();
       
       // Update project with chatroom reference and group code
+      // Add to both chatRoom (backward compat) and chatRooms array (for multiple chatrooms)
       project.chatRoom = chatRoom._id;
+      project.chatRooms = [chatRoom._id]; // Initialize array with first chatroom
       project.groupCode = projectGroupCode;
       await project.save();
       
@@ -136,14 +242,32 @@ router.post('/create', authenticateToken, async (req, res) => {
       await user.save();
     }
     
+    // Populate project data for response
     await project.populate('members.user', 'username avatar');
     await project.populate('chatRoom');
-    await project.populate('chatRoom.members', 'username avatar');
+    await project.populate('chatRooms', 'name members lastMessage');
+    if (project.chatRoom) {
+      await project.populate('chatRoom.members', 'username avatar');
+    }
+    // Populate members for all chatrooms in array
+    if (project.chatRooms && project.chatRooms.length > 0) {
+      await project.populate({
+        path: 'chatRooms',
+        populate: { path: 'members', select: 'username avatar online' }
+      });
+    }
     
-    res.json({ project });
+    res.json({ 
+      success: true,
+      project 
+    });
   } catch (error) {
     console.error('Error creating project:', error);
-    res.status(500).json({ error: 'Failed to create project: ' + error.message });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to create project: ' + (error.message || 'Unknown error') 
+    });
   }
 });
 
@@ -291,25 +415,52 @@ router.get('/:projectId/group-code', authenticateToken, async (req, res) => {
 router.post('/join-code/:groupCode', authenticateToken, async (req, res) => {
   try {
     const { groupCode } = req.params;
-    const user = await User.findById(req.userId);
     
-    // Find project by group code
-    const project = await Project.findOne({ groupCode: groupCode.toUpperCase() })
-      .populate('chatRoom');
-    
-    if (!project) {
-      return res.status(404).json({ error: 'Invalid group code. Project not found.' });
+    if (!groupCode || !groupCode.trim()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Group code is required' 
+      });
     }
     
-    // Check if user is already a member
-    const isMember = project.members.some(m => m.user.toString() === req.userId);
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+    
+    // Find project by group code (case-insensitive search)
+    const project = await Project.findOne({ 
+      groupCode: groupCode.trim().toUpperCase() 
+    }).populate('chatRoom');
+    
+    if (!project) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Invalid group code. Project not found.' 
+      });
+    }
+    
+    // Check if user is already a member (handle both ObjectId and populated objects)
+    const isMember = project.members.some(m => {
+      const memberUserId = typeof m.user === 'object' && m.user?._id 
+        ? m.user._id.toString() 
+        : (m.user?.toString() || m.user);
+      return memberUserId === req.userId.toString();
+    });
     
     if (isMember) {
+      // User is already a member, return success with existing data
+      await project.populate('members.user', 'username avatar');
+      await project.populate('chatRoom');
+      
       return res.json({ 
         success: true, 
         message: 'You are already a member of this project',
         project,
-        chatRoomId: project.chatRoom._id || project.chatRoom
+        chatRoomId: project.chatRoom?._id || project.chatRoom || null
       });
     }
     
@@ -321,20 +472,38 @@ router.post('/join-code/:groupCode', authenticateToken, async (req, res) => {
     await project.save();
     
     // Add user to chatroom if it exists
+    let chatRoomId = null;
     if (project.chatRoom) {
-      const chatRoom = await ChatRoom.findById(project.chatRoom._id || project.chatRoom);
-      if (chatRoom && !chatRoom.members.some(m => m.toString() === req.userId)) {
-        chatRoom.members.push(req.userId);
-        await chatRoom.save();
+      const chatRoom = await ChatRoom.findById(
+        project.chatRoom._id || project.chatRoom
+      );
+      if (chatRoom) {
+        // Check if user is already in chatroom
+        const isChatMember = chatRoom.members.some(m => {
+          const memberId = typeof m === 'object' && m._id 
+            ? m._id.toString() 
+            : m.toString();
+          return memberId === req.userId.toString();
+        });
+        
+        if (!isChatMember) {
+          chatRoom.members.push(req.userId);
+          await chatRoom.save();
+        }
+        chatRoomId = chatRoom._id;
       }
     }
     
     // Add project to user's projects list
-    if (!user.projects.some(p => p.toString() === project._id.toString())) {
+    const userProjectIds = user.projects.map(p => 
+      typeof p === 'object' ? p._id.toString() : p.toString()
+    );
+    if (!userProjectIds.includes(project._id.toString())) {
       user.projects.push(project._id);
       await user.save();
     }
     
+    // Populate project data for response
     await project.populate('members.user', 'username avatar');
     await project.populate('chatRoom');
     
@@ -342,11 +511,168 @@ router.post('/join-code/:groupCode', authenticateToken, async (req, res) => {
       success: true, 
       message: 'Successfully joined project!',
       project,
-      chatRoomId: project.chatRoom._id || project.chatRoom
+      chatRoomId: chatRoomId || project.chatRoom?._id || project.chatRoom || null
     });
   } catch (error) {
     console.error('Error joining project via group code:', error);
-    res.status(500).json({ error: 'Failed to join project: ' + error.message });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to join project: ' + (error.message || 'Unknown error') 
+    });
+  }
+});
+
+// Create additional chatroom for a project
+router.post('/:projectId/chatrooms/create', authenticateToken, async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { name } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Chat room name is required' 
+      });
+    }
+    
+    const project = await Project.findById(projectId);
+    
+    if (!project) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Project not found' 
+      });
+    }
+    
+    // Check if user is a project member
+    const isMember = project.members.some(m => {
+      const memberUserId = typeof m.user === 'object' && m.user?._id 
+        ? m.user._id.toString() 
+        : (m.user?.toString() || m.user);
+      return memberUserId === req.userId.toString();
+    });
+    
+    if (!isMember) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Not a member of this project' 
+      });
+    }
+    
+    // Generate group code for the new chatroom
+    const chatRoomGroupCode = await generateGroupCode(ChatRoom);
+    
+    // Get project's repository info
+    const repository = project.githubRepo?.fullName || null;
+    
+    // Create new chatroom for this project
+    const mongoose = (await import('mongoose')).default;
+    const userIdObjectId = typeof req.userId === 'string' 
+      ? new mongoose.Types.ObjectId(req.userId)
+      : req.userId;
+    
+    const chatRoom = new ChatRoom({
+      name: name.trim(),
+      project: project._id,
+      repository: repository,
+      members: [userIdObjectId],
+      groupCode: chatRoomGroupCode
+    });
+    
+    await chatRoom.save();
+    
+    // Add chatroom to project's chatRooms array
+    if (!project.chatRooms) {
+      project.chatRooms = [];
+    }
+    project.chatRooms.push(chatRoom._id);
+    await project.save();
+    
+    // Add all project members to the new chatroom
+    const projectMemberIds = project.members.map(m => {
+      const memberUserId = typeof m.user === 'object' && m.user?._id 
+        ? m.user._id 
+        : (m.user || m);
+      return typeof memberUserId === 'string' 
+        ? new mongoose.Types.ObjectId(memberUserId)
+        : memberUserId;
+    });
+    
+    // Add all project members (avoid duplicates)
+    const existingMemberIds = chatRoom.members.map(m => m.toString());
+    projectMemberIds.forEach(memberId => {
+      if (!existingMemberIds.includes(memberId.toString())) {
+        chatRoom.members.push(memberId);
+      }
+    });
+    await chatRoom.save();
+    
+    // Populate before sending
+    const populatedRoom = await ChatRoom.findById(chatRoom._id)
+      .populate('members', 'username avatar online')
+      .populate('project', 'name githubRepo');
+    
+    res.json({ 
+      success: true, 
+      room: populatedRoom,
+      message: 'Chatroom created successfully for project'
+    });
+  } catch (error) {
+    console.error('Error creating project chatroom:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to create chatroom: ' + (error.message || 'Unknown error') 
+    });
+  }
+});
+
+// Get all chatrooms for a project
+router.get('/:projectId/chatrooms', authenticateToken, async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    
+    const project = await Project.findById(projectId);
+    
+    if (!project) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Project not found' 
+      });
+    }
+    
+    // Check if user is a project member
+    const isMember = project.members.some(m => {
+      const memberUserId = typeof m.user === 'object' && m.user?._id 
+        ? m.user._id.toString() 
+        : (m.user?.toString() || m.user);
+      return memberUserId === req.userId.toString();
+    });
+    
+    if (!isMember) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Not a member of this project' 
+      });
+    }
+    
+    // Get all chatrooms for this project
+    const chatRooms = await ChatRoom.find({ project: projectId })
+      .populate('members', 'username avatar online')
+      .sort({ lastMessage: -1, createdAt: -1 });
+    
+    res.json({ 
+      success: true,
+      chatRooms: chatRooms 
+    });
+  } catch (error) {
+    console.error('Error fetching project chatrooms:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch chatrooms: ' + (error.message || 'Unknown error') 
+    });
   }
 });
 
@@ -447,6 +773,9 @@ router.post('/:projectId/leave', authenticateToken, async (req, res) => {
     );
     await project.save();
     
+    // Get user info before removing
+    const leavingUser = await User.findById(req.userId);
+    
     // Remove user from chatroom if it exists
     if (project.chatRoom) {
       const chatRoom = await ChatRoom.findById(project.chatRoom);
@@ -455,6 +784,22 @@ router.post('/:projectId/leave', authenticateToken, async (req, res) => {
           m => m.toString() !== req.userId.toString()
         );
         await chatRoom.save();
+        
+        // Emit socket event to notify all room members about the member leaving
+        try {
+          const io = req.app.get('io');
+          if (io) {
+            const roomName = `room:${project.chatRoom}`;
+            io.to(roomName).emit('member_left', {
+              roomId: project.chatRoom,
+              userId: req.userId,
+              username: leavingUser?.username || 'Unknown'
+            });
+          }
+        } catch (socketError) {
+          console.error('Error emitting member_left event:', socketError);
+          // Don't fail the request if socket emission fails
+        }
       }
     }
     

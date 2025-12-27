@@ -4,7 +4,10 @@ const messageSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: function() {
+      // User is not required for bot messages
+      return !['chaiwala_bot', 'dk_bot', 'system'].includes(this.type);
+    }
   },
   content: {
     type: String,

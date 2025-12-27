@@ -160,3 +160,93 @@ async function getLanguages(repoFullName, githubToken) {
     return {};
   }
 }
+
+/**
+ * Check if a file exists in the repository
+ */
+export async function checkFileExists(repoFullName, filePath, githubToken, branch = 'main') {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/repos/${repoFullName}/contents/${encodeURIComponent(filePath)}`,
+      {
+        headers: { Authorization: `token ${githubToken}` },
+        params: { ref: branch }
+      }
+    );
+    return {
+      exists: true,
+      sha: response.data.sha,
+      size: response.data.size
+    };
+  } catch (error) {
+    if (error.response?.status === 404) {
+      return { exists: false };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Create or update a file in GitHub repository
+ */
+export async function commitFileToRepository(
+  repoFullName,
+  filePath,
+  content,
+  commitMessage,
+  githubToken,
+  branch = 'main',
+  existingSha = null
+) {
+  try {
+    // Get the default branch if not provided
+    if (!branch || branch === 'main') {
+      const repoResponse = await axios.get(
+        `https://api.github.com/repos/${repoFullName}`,
+        {
+          headers: { Authorization: `token ${githubToken}` }
+        }
+      );
+      branch = repoResponse.data.default_branch || 'main';
+    }
+
+    // Encode content to base64
+    const encodedContent = Buffer.from(content, 'utf-8').toString('base64');
+
+    // Prepare the request body
+    const requestBody = {
+      message: commitMessage,
+      content: encodedContent,
+      branch: branch
+    };
+
+    // If file exists, include the SHA to update it
+    if (existingSha) {
+      requestBody.sha = existingSha;
+    }
+
+    const response = await axios.put(
+      `https://api.github.com/repos/${repoFullName}/contents/${encodeURIComponent(filePath)}`,
+      requestBody,
+      {
+        headers: {
+          Authorization: `token ${githubToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return {
+      success: true,
+      commit: response.data.commit,
+      content: response.data.content,
+      message: existingSha ? 'File updated successfully' : 'File created successfully'
+    };
+  } catch (error) {
+    console.error('Error committing file to repository:', error.response?.data || error.message);
+    throw new Error(
+      error.response?.data?.message || 
+      `Failed to commit file: ${error.message}`
+    );
+  }
+}

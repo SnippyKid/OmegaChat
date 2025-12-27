@@ -21,15 +21,23 @@ export function AuthProvider({ children }) {
   const fetchUser = async (authToken) => {
     try {
       const response = await axios.get('/api/auth/me', {
-        headers: { Authorization: `Bearer ${authToken}` }
+        headers: { Authorization: `Bearer ${authToken}` },
+        timeout: 2000 // 2 second timeout - fail fast
       });
-      setUser(response.data.user);
-      setTokenState(authToken);
+      
+      if (response.data && response.data.user) {
+        setUser(response.data.user);
+        setTokenState(authToken);
+      } else {
+        throw new Error('Invalid user data received');
+      }
     } catch (error) {
-      console.error('Auth error:', error);
+      // Clear invalid token on any error
       localStorage.removeItem('token');
       setTokenState(null);
+      setUser(null);
     } finally {
+      // Always stop loading - no retries, no waiting
       setLoading(false);
     }
   };

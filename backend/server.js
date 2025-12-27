@@ -51,44 +51,117 @@ app.use('/uploads', express.static(uploadsPath));
 // MongoDB connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/omega-chat';
 
-mongoose.connect(MONGODB_URI)
+// Configure mongoose to handle connection better
+mongoose.set('bufferCommands', false); // Disable mongoose buffering
+
+// Connection options
+const mongooseOptions = {
+  serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+  socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+  connectTimeoutMS: 10000, // Give up initial connection after 10s
+  maxPoolSize: 10, // Maintain up to 10 socket connections
+  minPoolSize: 1, // Maintain at least 1 socket connection
+};
+
+mongoose.connect(MONGODB_URI, mongooseOptions)
   .then(() => {
     console.log('✅ MongoDB connected successfully');
   })
   .catch((error) => {
     console.error('❌ MongoDB connection error:', error.message);
     console.log('💡 Tip: Make sure MongoDB is running or check your MONGODB_URI in .env');
+    console.log('💡 If using local MongoDB, start it with: mongod');
+    console.log('💡 If using MongoDB Atlas, check your connection string');
   });
 
 // MongoDB connection state
 const db = mongoose.connection;
 db.on('error', (error) => {
-  console.error('MongoDB error:', error);
+  console.error('❌ MongoDB error:', error);
 });
 db.on('disconnected', () => {
   console.warn('⚠️ MongoDB disconnected');
 });
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  const mongoStatus = mongoose.connection.readyState;
-  // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
-  
-  res.json({ 
-    status: 'ok', 
-    message: 'Omega Chat API is running!',
-    timestamp: new Date().toISOString(),
-    database: {
-      status: mongoStatus === 1 ? 'connected' : 'disconnected',
-      readyState: mongoStatus
-    }
-  });
+db.on('reconnected', () => {
+  console.log('✅ MongoDB reconnected');
+});
+db.on('connecting', () => {
+  console.log('🔄 Connecting to MongoDB...');
 });
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/projects', projectRoutes);
-app.use('/api/chat', chatRoutes);
+// Health check endpoint - must be before routes to catch early errors
+app.get('/api/health', (req, res) => {
+  try {
+    console.log('📊 Health check requested');
+    
+    // Safely get mongoose connection state
+    let mongoStatus = 0;
+    try {
+      mongoStatus = mongoose?.connection?.readyState ?? 0;
+    } catch (mongoError) {
+      console.error('Error accessing mongoose connection:', mongoError);
+      mongoStatus = 0;
+    }
+    
+    // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+    const statusMessages = {
+      0: 'disconnected',
+      1: 'connected',
+      2: 'connecting',
+      3: 'disconnecting'
+    };
+    
+    // Safely hide credentials in URI
+    let safeUri = MONGODB_URI || 'not set';
+    try {
+      if (MONGODB_URI && typeof MONGODB_URI === 'string') {
+        safeUri = MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@');
+      }
+    } catch (uriError) {
+      console.error('URI processing error:', uriError);
+      safeUri = MONGODB_URI || 'not set';
+    }
+    
+    const response = { 
+      status: mongoStatus === 1 ? 'ok' : 'degraded', 
+      message: mongoStatus === 1 ? 'Omega Chat API is running!' : 'API is running but MongoDB is not connected',
+      timestamp: new Date().toISOString(),
+      database: {
+        status: statusMessages[mongoStatus] || 'unknown',
+        readyState: mongoStatus,
+        connected: mongoStatus === 1,
+        uri: safeUri
+      }
+    };
+    
+    console.log('✅ Health check response:', JSON.stringify(response, null, 2));
+    res.json(response);
+  } catch (error) {
+    console.error('❌ Health check error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({
+      status: 'error',
+      message: 'Health check failed',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Routes - wrap in try-catch to handle any route initialization errors
+try {
+  app.use('/api/auth', authRoutes);
+  app.use('/api/projects', projectRoutes);
+  app.use('/api/chat', chatRoutes);
+  console.log('✅ Routes registered successfully');
+} catch (routeError) {
+  console.error('❌ Error registering routes:', routeError);
+  console.error('Route error stack:', routeError.stack);
+  // Continue - health endpoint should still work
+}
+
+// (Error handlers will be registered after all routes and test endpoints)
 
 // Test endpoint to verify models work
 app.get('/api/test/models', async (req, res) => {
@@ -223,6 +296,26 @@ setupSocketIO(io);
 
 // Make io instance available to routes for webhooks
 app.set('io', io);
+
+// Global error handler middleware (must be after all routes)
+app.use((err, req, res, next) => {
+  console.error('❌ Unhandled error:', err);
+  console.error('Error stack:', err.stack);
+  res.status(err.status || 500).json({
+    status: 'error',
+    message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// 404 handler (must be after all routes)
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Route not found',
+    path: req.path
+  });
+});
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

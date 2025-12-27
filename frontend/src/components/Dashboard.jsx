@@ -40,6 +40,17 @@ export default function Dashboard() {
   const [deletingProject, setDeletingProject] = useState(null);
   const [leavingProject, setLeavingProject] = useState(null);
   const [showProjectMenu, setShowProjectMenu] = useState(null);
+  const [showCreateChatroomModal, setShowCreateChatroomModal] = useState(null); // projectId
+  const [newChatroomName, setNewChatroomName] = useState('');
+  const [creatingChatroom, setCreatingChatroom] = useState(false);
+  const [expandedProjects, setExpandedProjects] = useState(new Set()); // Track expanded projects
+  const [showAddMemberModal, setShowAddMemberModal] = useState(null); // roomId
+  const [memberUsername, setMemberUsername] = useState('');
+  const [memberEmail, setMemberEmail] = useState('');
+  const [addingMember, setAddingMember] = useState(false);
+  const [addMemberBy, setAddMemberBy] = useState('username'); // 'username' or 'email'
+  const [githubStats, setGithubStats] = useState(null);
+  const [loadingGithubStats, setLoadingGithubStats] = useState(false);
 
   // Show notification helper
   const showNotification = useCallback((message, type = 'success') => {
@@ -52,11 +63,32 @@ export default function Dashboard() {
     console.debug('Projects loaded:', projects);
   }, [projects]);
 
+  const fetchGithubStats = useCallback(async () => {
+    if (!token) return;
+    
+    setLoadingGithubStats(true);
+    try {
+      const response = await axios.get('/api/auth/github-stats', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      if (response.data && response.data.success) {
+        setGithubStats(response.data.stats);
+      }
+    } catch (error) {
+      console.error('Error fetching GitHub stats:', error);
+      // Don't show error - stats are optional
+    } finally {
+      setLoadingGithubStats(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     fetchProjects();
     fetchRepositories();
     fetchPersonalRooms();
-  }, [token]);
+    fetchGithubStats();
+  }, [token, fetchGithubStats]);
 
   const fetchPersonalRooms = async () => {
     try {
@@ -224,18 +256,143 @@ export default function Dashboard() {
     }
   };
 
-  const openChat = (project) => {
-    // Handle both populated object and ID string
-    const chatRoomId = project.chatRoom?._id || project.chatRoom;
+  const openChat = (project, chatRoomId = null) => {
+    // If specific chatroom ID provided, use it
     if (chatRoomId) {
       navigate(`/chat/${chatRoomId}`);
+      return;
+    }
+    
+    // Check if project has multiple chatrooms
+    const allChatRooms = project.chatRooms || [];
+    const defaultChatRoom = project.chatRoom?._id || project.chatRoom;
+    
+    // If multiple chatrooms exist, show selection (for now, use default/main one)
+    if (allChatRooms.length > 0) {
+      // Use the first/main chatroom, or default chatRoom
+      const roomToOpen = defaultChatRoom || (allChatRooms[0]?._id || allChatRooms[0]);
+      if (roomToOpen) {
+        navigate(`/chat/${roomToOpen}`);
+      } else {
+        showNotification('No chat room available for this project.', 'error');
+      }
+    } else if (defaultChatRoom) {
+      // Fallback to default chatRoom
+      navigate(`/chat/${defaultChatRoom}`);
     } else {
-      showNotification('Chat room not available for this project. Please try again or recreate the project.', 'error');
+      showNotification('Chat room not available for this project. Please create one.', 'error');
+    }
+  };
+  
+  const handleCreateProjectChatroom = async (projectId, roomName) => {
+    if (!roomName || !roomName.trim()) {
+      showNotification('Please enter a chat room name', 'error');
+      return;
+    }
+    
+    try {
+      const response = await axios.post(`/api/projects/${projectId}/chatrooms/create`, 
+        { name: roomName.trim() },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      
+      if (response.data.success && response.data.room) {
+        showNotification('Chatroom created successfully!', 'success');
+        await fetchProjects(); // Refresh projects to show new chatroom
+        
+        // Open the new chatroom
+        const roomId = response.data.room._id?.toString() || response.data.room._id;
+        if (roomId) {
+          setTimeout(() => navigate(`/chat/${roomId}`), 300);
+        }
+        return true;
+      } else {
+        throw new Error(response.data.error || 'Failed to create chatroom');
+      }
+    } catch (error) {
+      showNotification('Failed to create chatroom: ' + (error.response?.data?.error || error.message), 'error');
+      return false;
+    }
+  };
+
+  const handleAddMemberToChatroom = async (roomId) => {
+    console.log('handleAddMemberToChatroom called with roomId:', roomId);
+    console.log('addMemberBy:', addMemberBy);
+    console.log('memberUsername:', memberUsername);
+    console.log('memberEmail:', memberEmail);
+    
+    if (!roomId) {
+      console.error('No roomId provided');
+      showNotification('Invalid room ID', 'error');
+      return;
+    }
+    
+    if (addMemberBy === 'username' && !memberUsername.trim()) {
+      showNotification('Please enter a username', 'error');
+      return;
+    }
+    if (addMemberBy === 'email' && !memberEmail.trim()) {
+      showNotification('Please enter an email', 'error');
+      return;
+    }
+    
+    setAddingMember(true);
+    try {
+      const payload = addMemberBy === 'username' 
+        ? { username: memberUsername.trim() }
+        : { email: memberEmail.trim() };
+      
+      console.log('Sending request to:', `/api/chat/${roomId}/members/add`);
+      console.log('Payload:', payload);
+      
+      const response = await axios.post(`/api/chat/${roomId}/members/add`, 
+        payload,
+        { 
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 10000
+        }
+      );
+      
+      console.log('Response received:', response.data);
+      
+      if (response.data && response.data.success) {
+        showNotification(response.data.message || 'Member added successfully!', 'success');
+        
+        // Refresh data
+        try {
+          await Promise.all([
+            fetchProjects(),
+            fetchPersonalRooms()
+          ]);
+        } catch (refreshError) {
+          console.warn('Error refreshing data:', refreshError);
+        }
+        
+        // Close modal and reset state
+        setShowAddMemberModal(null);
+        setMemberUsername('');
+        setMemberEmail('');
+        setAddMemberBy('username');
+      } else {
+        throw new Error(response.data?.error || 'Failed to add member');
+      }
+    } catch (error) {
+      console.error('Error adding member:', error);
+      console.error('Error response:', error.response?.data);
+      const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to add member';
+      showNotification(errorMessage, 'error');
+    } finally {
+      setAddingMember(false);
     }
   };
 
   const openPersonalRoom = (room) => {
-    navigate(`/chat/${room._id}`);
+    if (!room || !room._id) {
+      showNotification('Invalid room data', 'error');
+      return;
+    }
+    const roomId = room._id?.toString() || room._id;
+    navigate(`/chat/${roomId}`);
   };
 
   const handleDeletePersonalRoom = async (roomId, e) => {
@@ -360,14 +517,21 @@ export default function Dashboard() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
-      setShowPersonalRoomModal(false);
-      setPersonalRoomName('');
-      await fetchPersonalRooms();
-      showNotification('Personal chatroom created successfully!', 'success');
-      
-      // Optionally open the new room
-      if (response.data.room) {
-        setTimeout(() => openPersonalRoom(response.data.room), 500);
+      if (response.data.success && response.data.room) {
+        setShowPersonalRoomModal(false);
+        setPersonalRoomName('');
+        showNotification('Personal chatroom created successfully!', 'success');
+        
+        // Refresh rooms list first
+        await fetchPersonalRooms();
+        
+        // Open the new room immediately
+        const roomId = response.data.room._id?.toString() || response.data.room._id;
+        if (roomId) {
+          setTimeout(() => navigate(`/chat/${roomId}`), 300);
+        }
+      } else {
+        throw new Error(response.data.error || 'Failed to create room');
       }
     } catch (error) {
       showNotification('Failed to create personal chatroom: ' + (error.response?.data?.error || error.message), 'error');
@@ -401,44 +565,78 @@ export default function Dashboard() {
     }
     
     setJoiningCode(true);
+    const normalizedCode = joinCode.trim().toUpperCase();
+    
     try {
       // Try joining as project first
       try {
-        const response = await axios.post(`/api/projects/join-code/${joinCode.trim().toUpperCase()}`, {},
+        const response = await axios.post(`/api/projects/join-code/${normalizedCode}`, {},
           { headers: { Authorization: `Bearer ${token}` } }
         );
         
         if (response.data.success) {
-          showNotification('Successfully joined project!', 'success');
+          const chatRoomId = response.data.chatRoomId || 
+                           response.data.project?.chatRoom?._id || 
+                           response.data.project?.chatRoom;
+          
+          showNotification(response.data.message || 'Successfully joined project!', 'success');
           setShowJoinCodeModal(false);
           setJoinCode('');
+          
+          // Refresh project list
           await fetchProjects();
-          if (response.data.chatRoomId) {
-            setTimeout(() => navigate(`/chat/${response.data.chatRoomId}`), 500);
+          
+          // Navigate to chat room if available
+          if (chatRoomId) {
+            setTimeout(() => navigate(`/chat/${chatRoomId}`), 500);
+          } else {
+            // Refresh to show updated project list
+            window.location.reload();
           }
           return;
+        } else {
+          throw new Error(response.data.error || 'Failed to join project');
         }
       } catch (projectError) {
-        // If project join fails, try chatroom join
-        const response = await axios.post(`/api/chat/join-code/${joinCode.trim().toUpperCase()}`, {},
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        
-        if (response.data.success) {
-          showNotification('Successfully joined chat room!', 'success');
-          setShowJoinCodeModal(false);
-          setJoinCode('');
-          await fetchPersonalRooms();
-          if (response.data.room?._id) {
-            setTimeout(() => navigate(`/chat/${response.data.room._id}`), 500);
+        // If project join fails (404 or other error), try chatroom join
+        if (projectError.response?.status === 404) {
+          // Project not found, try chatroom
+          const response = await axios.post(`/api/chat/join-code/${normalizedCode}`, {},
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          
+          if (response.data.success) {
+            const roomId = response.data.room?._id || response.data.room;
+            
+            showNotification(response.data.message || 'Successfully joined chat room!', 'success');
+            setShowJoinCodeModal(false);
+            setJoinCode('');
+            
+            // Refresh personal rooms list
+            await fetchPersonalRooms();
+            
+            // Navigate to chat room if available
+            if (roomId) {
+              setTimeout(() => navigate(`/chat/${roomId}`), 500);
+            } else {
+              window.location.reload();
+            }
+            return;
+          } else {
+            throw new Error(response.data.error || 'Failed to join chat room');
           }
-          return;
+        } else {
+          // Other error from project join, throw it
+          throw projectError;
         }
       }
-      // If both fail
-      throw new Error('Invalid group code');
     } catch (error) {
-      showNotification('Failed to join: ' + (error.response?.data?.error || error.message), 'error');
+      const errorMessage = error.response?.data?.error || 
+                          error.response?.data?.message ||
+                          error.message || 
+                          'Failed to join. Please check the group code and try again.';
+      showNotification(errorMessage, 'error');
+      console.error('Join error:', error);
     } finally {
       setJoiningCode(false);
     }
@@ -463,35 +661,35 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50">
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100">
         <div className="text-center">
-          <Loader2 className="h-12 w-12 animate-spin text-primary-600 mx-auto mb-4" />
-          <p className="text-gray-600">Loading dashboard...</p>
+          <Loader2 className="h-12 w-12 animate-spin text-purple-600 mx-auto mb-4" />
+          <p className="text-purple-700 font-medium">Loading dashboard...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b">
+      <header className="bg-gradient-to-r from-purple-600 to-lavender-600 shadow-lg border-b border-purple-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-primary-600 rounded-lg flex items-center justify-center text-white font-bold text-xl">
+              <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg border border-white/30">
                 Ω
               </div>
               <div>
-                <h1 className="text-xl font-bold text-gray-900">Omega Chat</h1>
-                <p className="text-sm text-gray-500">{user?.username}</p>
+                <h1 className="text-xl font-bold text-white">Omega Chat</h1>
+                <p className="text-sm text-white/90 font-medium">{user?.username}</p>
               </div>
             </div>
             <div className="flex items-center gap-4">
               <button
                 onClick={handleRefresh}
                 disabled={refreshing}
-                className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-100 text-gray-900 rounded-lg transition-all disabled:opacity-50 shadow-sm border border-white/30 font-medium"
                 title="Refresh"
               >
                 <RefreshCw size={20} className={refreshing ? 'animate-spin' : ''} />
@@ -499,28 +697,28 @@ export default function Dashboard() {
               </button>
               <button
                 onClick={() => setShowJoinCodeModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
               >
                 <Key size={20} />
                 Join via Code
               </button>
               <button
                 onClick={() => setShowPersonalRoomModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
               >
                 <MessageSquare size={20} />
                 Personal Chat
               </button>
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-lavender-500 hover:bg-lavender-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
               >
                 <Plus size={20} />
                 New Project
               </button>
               <button
                 onClick={logout}
-                className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-100 text-gray-900 rounded-lg transition-all shadow-sm border border-white/30 font-medium"
               >
                 <LogOut size={20} />
                 Logout
@@ -532,18 +730,20 @@ export default function Dashboard() {
 
       {/* Notification Toast */}
       {notification && (
-        <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg ${
-          notification.type === 'success' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
-        } animate-slide-in`}>
+        <div className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-5 py-3 rounded-xl shadow-2xl ${
+          notification.type === 'success' 
+            ? 'bg-gradient-to-r from-emerald-500 to-green-500 text-white' 
+            : 'bg-gradient-to-r from-red-500 to-rose-500 text-white'
+        } animate-slide-in border-2 ${notification.type === 'success' ? 'border-emerald-300' : 'border-red-300'}`}>
           {notification.type === 'success' ? (
             <CheckCircle2 size={20} />
           ) : (
             <AlertCircle size={20} />
           )}
-          <span>{notification.message}</span>
+          <span className="font-medium">{notification.message}</span>
           <button
             onClick={() => setNotification(null)}
-            className="ml-2 hover:opacity-80"
+            className="ml-2 hover:opacity-80 transition-opacity"
           >
             <X size={18} />
           </button>
@@ -552,16 +752,104 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* GitHub Stats Section */}
+        {githubStats && (
+          <div className="mb-8 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-xl border border-purple-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-purple-600 to-lavender-600 px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Github size={24} className="text-white" />
+                  <h2 className="text-xl font-bold text-white">GitHub Profile</h2>
+                </div>
+                <a
+                  href={githubStats.profileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-white/90 hover:text-white text-sm font-medium flex items-center gap-1"
+                >
+                  View Profile
+                  <Eye size={16} />
+                </a>
+              </div>
+            </div>
+            <div className="p-6">
+              <div className="flex items-start gap-6 mb-6">
+                <img
+                  src={githubStats.avatar}
+                  alt={githubStats.username}
+                  className="w-20 h-20 rounded-full border-4 border-purple-200 shadow-lg"
+                />
+                <div className="flex-1">
+                  <h3 className="text-2xl font-bold text-gray-900">{githubStats.name}</h3>
+                  <p className="text-purple-600 font-medium">@{githubStats.username}</p>
+                  {githubStats.bio && (
+                    <p className="text-gray-600 mt-2">{githubStats.bio}</p>
+                  )}
+                  <div className="flex items-center gap-4 mt-3 text-sm text-gray-600">
+                    {githubStats.location && (
+                      <span className="flex items-center gap-1">
+                        📍 {githubStats.location}
+                      </span>
+                    )}
+                    {githubStats.company && (
+                      <span className="flex items-center gap-1">
+                        🏢 {githubStats.company}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
+              {/* Stats Grid */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
+                  <div className="text-2xl font-bold text-purple-700">{githubStats.followers}</div>
+                  <div className="text-sm text-purple-600 font-medium">Followers</div>
+                </div>
+                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
+                  <div className="text-2xl font-bold text-purple-700">{githubStats.following}</div>
+                  <div className="text-sm text-purple-600 font-medium">Following</div>
+                </div>
+                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
+                  <div className="text-2xl font-bold text-purple-700">{githubStats.publicRepos}</div>
+                  <div className="text-sm text-purple-600 font-medium">Public Repos</div>
+                </div>
+                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
+                  <div className="text-2xl font-bold text-purple-700">{githubStats.totalStars}</div>
+                  <div className="text-sm text-purple-600 font-medium">Total Stars</div>
+                </div>
+              </div>
+              
+              {/* Top Languages */}
+              {githubStats.topLanguages && githubStats.topLanguages.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-3">Top Languages</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {githubStats.topLanguages.map((lang, idx) => (
+                      <div
+                        key={idx}
+                        className="px-3 py-1.5 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-lg text-sm font-medium shadow-sm"
+                      >
+                        {lang.language} ({lang.count})
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Search Bar */}
         <div className="mb-6">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-purple-400" size={20} />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search projects and chatrooms..."
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="w-full pl-10 pr-4 py-3 border-2 border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white/80 backdrop-blur-sm shadow-sm"
             />
             {searchQuery && (
               <button
@@ -574,205 +862,41 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Personal Chatrooms Section */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold text-gray-900">
-              Personal Chatrooms
-              {searchQuery && <span className="text-sm font-normal text-gray-500 ml-2">({filteredPersonalRooms.length})</span>}
-            </h2>
-            <button
-              onClick={() => setShowPersonalRoomModal(true)}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors shadow-sm"
-            >
-              <Plus size={16} />
-              New Chat
-            </button>
-          </div>
-          
-          {filteredPersonalRooms.length === 0 && !searchQuery ? (
-            <div className="text-center py-12 bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg shadow border border-purple-200">
-              <MessageSquare className="mx-auto h-12 w-12 text-purple-400" />
-              <h3 className="mt-4 text-lg font-medium text-gray-900">No personal chatrooms yet</h3>
-              <p className="mt-2 text-gray-600">Create a personal chatroom for general discussions</p>
-              <button
-                onClick={() => setShowPersonalRoomModal(true)}
-                className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-              >
-                Create Personal Chatroom
-              </button>
-            </div>
-          ) : filteredPersonalRooms.length === 0 && searchQuery ? (
-            <div className="text-center py-12 bg-white rounded-lg shadow border border-gray-200">
-              <Search className="mx-auto h-12 w-12 text-gray-400" />
-              <h3 className="mt-4 text-lg font-medium text-gray-900">No chatrooms found</h3>
-              <p className="mt-2 text-gray-500">Try adjusting your search query</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredPersonalRooms.map((room) => (
-                <div
-                  key={room._id}
-                  className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg shadow hover:shadow-lg transition-all p-6 border border-purple-200 hover:border-purple-300 relative group"
-                >
-                  <div
-                    onClick={() => openPersonalRoom(room)}
-                    className="cursor-pointer"
-                  >
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex-1">
-                        {editingRoom === room._id ? (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={editRoomName}
-                              onChange={(e) => setEditRoomName(e.target.value)}
-                              onKeyPress={(e) => {
-                                if (e.key === 'Enter') {
-                                  handleEditRoomName(room._id, e);
-                                } else if (e.key === 'Escape') {
-                                  setEditingRoom(null);
-                                  setEditRoomName('');
-                                }
-                              }}
-                              className="flex-1 px-2 py-1 border border-purple-300 rounded text-sm font-semibold"
-                              autoFocus
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                            <button
-                              onClick={(e) => handleEditRoomName(room._id, e)}
-                              className="p-1 text-green-600 hover:bg-green-50 rounded"
-                              title="Save"
-                            >
-                              <CheckCircle2 size={16} />
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingRoom(null);
-                                setEditRoomName('');
-                              }}
-                              className="p-1 text-red-600 hover:bg-red-50 rounded"
-                              title="Cancel"
-                            >
-                              <X size={16} />
-                            </button>
-                          </div>
-                        ) : (
-                          <h3 className="text-lg font-semibold text-gray-900">{room.name}</h3>
-                        )}
-                        <p className="text-sm text-purple-600 mt-1 font-medium">Personal Chatroom</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <MessageSquare size={20} className="text-purple-600 flex-shrink-0" />
-                        <div className="relative">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowRoomMenu(showRoomMenu === room._id ? null : room._id);
-                            }}
-                            className="p-1 hover:bg-purple-100 rounded transition-colors opacity-0 group-hover:opacity-100"
-                          >
-                            <MoreVertical size={18} className="text-gray-600" />
-                          </button>
-                          {showRoomMenu === room._id && (
-                            <div className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[160px]">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEditingRoom(room._id);
-                                  setEditRoomName(room.name);
-                                  setShowRoomMenu(null);
-                                }}
-                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                              >
-                                <Edit2 size={16} />
-                                Edit Name
-                              </button>
-                              <button
-                                onClick={(e) => handleLeaveRoom(room._id, e)}
-                                disabled={leavingRoom === room._id}
-                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
-                              >
-                                {leavingRoom === room._id ? (
-                                  <Loader2 size={16} className="animate-spin" />
-                                ) : (
-                                  <LeaveIcon size={16} />
-                                )}
-                                Leave Room
-                              </button>
-                              <button
-                                onClick={(e) => handleDeletePersonalRoom(room._id, e)}
-                                disabled={deletingRoom === room._id}
-                                className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50"
-                              >
-                                {deletingRoom === room._id ? (
-                                  <Loader2 size={16} className="animate-spin" />
-                                ) : (
-                                  <Trash2 size={16} />
-                                )}
-                                Delete Room
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
-                      <Users size={16} />
-                      <span>
-                        {room.members && room.members.length > 0 
-                          ? `${room.members.length} member${room.members.length !== 1 ? 's' : ''}` 
-                          : '0 members'}
-                      </span>
-                    </div>
-                    {room.lastMessage && (
-                      <p className="text-xs text-gray-500">
-                        Last active: {new Date(room.lastMessage).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        
         <div className="flex items-center justify-between mb-6 mt-8">
-          <h2 className="text-2xl font-bold text-gray-900">
+          <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">
             Your Projects
-            {searchQuery && <span className="text-sm font-normal text-gray-500 ml-2">({filteredProjects.length})</span>}
+            {searchQuery && <span className="text-sm font-normal text-purple-500 ml-2">({filteredProjects.length})</span>}
           </h2>
         </div>
         
         {filteredProjects.length === 0 && !searchQuery ? (
-          <div className="text-center py-12 bg-white rounded-lg shadow border border-gray-200">
-            <Github className="mx-auto h-12 w-12 text-gray-400" />
+          <div className="text-center py-12 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg border-2 border-purple-200">
+            <Github className="mx-auto h-12 w-12 text-purple-400" />
             <h3 className="mt-4 text-lg font-medium text-gray-900">No projects yet</h3>
-            <p className="mt-2 text-gray-500">Create a project from your GitHub repository to get started</p>
+            <p className="mt-2 text-gray-600">Create a project from your GitHub repository to get started</p>
             <button
               onClick={() => setShowCreateModal(true)}
-              className="mt-4 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors shadow-sm"
+              className="mt-4 px-6 py-3 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg font-medium"
             >
               Create Project
             </button>
           </div>
         ) : filteredProjects.length === 0 && searchQuery ? (
-          <div className="text-center py-12 bg-white rounded-lg shadow border border-gray-200">
-            <Search className="mx-auto h-12 w-12 text-gray-400" />
+          <div className="text-center py-12 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg border-2 border-purple-200">
+            <Search className="mx-auto h-12 w-12 text-purple-400" />
             <h3 className="mt-4 text-lg font-medium text-gray-900">No projects found</h3>
-            <p className="mt-2 text-gray-500">Try adjusting your search query</p>
+            <p className="mt-2 text-gray-600">Try adjusting your search query</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredProjects.map((project) => {
               const isOwner = project.members?.some(m => m.user?._id === user?._id && m.role === 'owner') || 
                              project.members?.some(m => m.user === user?._id && m.role === 'owner');
               return (
                 <div
                   key={project._id}
-                  className={`bg-white rounded-lg shadow hover:shadow-lg transition-all p-6 border border-gray-200 relative group ${
-                    (project?.chatRoom?._id || project?.chatRoom) ? 'cursor-pointer hover:border-primary-300' : 'cursor-not-allowed opacity-80'
+                  className={`bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-purple-200 hover:border-purple-400 relative group ${
+                    (project?.chatRoom?._id || project?.chatRoom) ? 'cursor-pointer' : 'cursor-not-allowed opacity-80'
                   }`}
                 >
                   <div
@@ -791,16 +915,16 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-500 mt-1">{project.githubRepo?.fullName}</p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Github size={20} className="text-gray-400" />
+                        <Github size={20} className="text-purple-500" />
                         <div className="relative">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setShowProjectMenu(showProjectMenu === project._id ? null : project._id);
                             }}
-                            className="p-1 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-1.5 hover:bg-purple-100 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                           >
-                            <MoreVertical size={18} className="text-gray-600" />
+                            <MoreVertical size={18} className="text-purple-600" />
                           </button>
                           {showProjectMenu === project._id && (
                             <div className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[160px]">
@@ -854,7 +978,7 @@ export default function Dashboard() {
                     {project.description && (
                       <p className="text-sm text-gray-600 mb-4 line-clamp-2">{project.description}</p>
                     )}
-                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <div className="flex items-center gap-2 text-sm text-purple-600 mb-3 font-medium">
                       <MessageSquare size={16} />
                       <span>
                         {project.members && project.members.length > 0 
@@ -862,8 +986,125 @@ export default function Dashboard() {
                           : '0 members'}
                       </span>
                       {isOwner && (
-                        <span className="ml-2 px-2 py-0.5 bg-primary-100 text-primary-700 text-xs rounded-full">Owner</span>
+                        <span className="ml-2 px-2.5 py-1 bg-gradient-to-r from-purple-500 to-lavender-500 text-white text-xs rounded-full font-semibold shadow-sm">Owner</span>
                       )}
+                    </div>
+                    
+                    {/* Chatrooms Section */}
+                    <div className="border-t-2 border-purple-200 pt-3 mt-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-purple-600 uppercase tracking-wide">Chatrooms</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowCreateChatroomModal(project._id);
+                            setNewChatroomName('');
+                          }}
+                          className="text-xs px-2.5 py-1 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-lg hover:from-purple-600 hover:to-lavender-600 transition-all shadow-sm flex items-center gap-1 font-medium"
+                          title="Create new chatroom"
+                        >
+                          <Plus size={12} />
+                          New
+                        </button>
+                      </div>
+                      
+                      {/* Get all chatrooms for this project */}
+                      {(() => {
+                        const allChatRooms = project.chatRooms || [];
+                        const defaultChatRoom = project.chatRoom?._id || project.chatRoom;
+                        const chatRoomsList = [];
+                        
+                        // Add default/main chatroom if exists
+                        if (defaultChatRoom) {
+                          const defaultRoom = typeof defaultChatRoom === 'object' 
+                            ? defaultChatRoom 
+                            : allChatRooms.find(r => (r._id || r).toString() === defaultChatRoom.toString());
+                          if (defaultRoom && !chatRoomsList.some(r => (r._id || r).toString() === (defaultRoom._id || defaultRoom).toString())) {
+                            chatRoomsList.push(defaultRoom);
+                          }
+                        }
+                        
+                        // Add other chatrooms
+                        allChatRooms.forEach(room => {
+                          const roomId = room._id || room;
+                          if (!chatRoomsList.some(r => (r._id || r).toString() === roomId.toString())) {
+                            chatRoomsList.push(room);
+                          }
+                        });
+                        
+                        const isExpanded = expandedProjects.has(project._id.toString());
+                        const displayRooms = isExpanded ? chatRoomsList : chatRoomsList.slice(0, 2);
+                        
+                        return (
+                          <div className="space-y-1">
+                            {displayRooms.length > 0 ? (
+                              <>
+                                {displayRooms.map((room) => {
+                                  const roomId = room._id || room;
+                                  const roomName = room.name || 'Unnamed Room';
+                                  return (
+                                    <div
+                                      key={roomId.toString()}
+                                      className="flex items-center justify-between p-2.5 bg-gradient-to-r from-purple-50 to-lavender-50 hover:from-purple-100 hover:to-lavender-100 rounded-xl transition-all group border border-purple-200"
+                                    >
+                                      <div
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openChat(project, roomId);
+                                        }}
+                                        className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer"
+                                      >
+                                        <MessageSquare size={14} className="text-purple-500 flex-shrink-0" />
+                                        <span className="text-sm text-gray-700 truncate font-medium">{roomName}</span>
+                                        {defaultChatRoom && (roomId.toString() === (defaultChatRoom._id || defaultChatRoom).toString()) && (
+                                          <span className="text-xs px-2 py-0.5 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-full flex-shrink-0 font-semibold shadow-sm">Main</span>
+                                        )}
+                                      </div>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const roomIdStr = typeof roomId === 'object' && roomId._id 
+                                            ? roomId._id.toString() 
+                                            : roomId.toString();
+                                          console.log('Opening add member modal for room:', roomIdStr);
+                                          setShowAddMemberModal(roomIdStr);
+                                          setMemberUsername('');
+                                          setMemberEmail('');
+                                          setAddMemberBy('username');
+                                        }}
+                                        className="p-1.5 hover:bg-purple-200 rounded-lg transition-all hover:scale-110 active:scale-95"
+                                        title="Add member to chatroom"
+                                      >
+                                        <Users size={14} className="text-purple-600" />
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                                {chatRoomsList.length > 2 && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const projectId = project._id.toString();
+                                      const newExpanded = new Set(expandedProjects);
+                                      if (isExpanded) {
+                                        newExpanded.delete(projectId);
+                                      } else {
+                                        newExpanded.add(projectId);
+                                      }
+                                      setExpandedProjects(newExpanded);
+                                    }}
+                                    className="w-full text-xs text-purple-600 hover:text-purple-700 py-1 text-center font-medium"
+                                  >
+                                    {isExpanded ? 'Show Less' : `+${chatRoomsList.length - 2} more`}
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <p className="text-xs text-gray-400 italic">No chatrooms yet</p>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -871,20 +1112,223 @@ export default function Dashboard() {
             })}
           </div>
         )}
+
+        {/* Personal Chatrooms Section */}
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">
+              Personal Chatrooms
+              {searchQuery && <span className="text-sm font-normal text-purple-500 ml-2">({filteredPersonalRooms.length})</span>}
+            </h2>
+            <button
+              onClick={() => setShowPersonalRoomModal(true)}
+              className="flex items-center gap-2 px-4 py-2 text-sm bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg font-medium"
+            >
+              <Plus size={16} />
+              New Chat
+            </button>
+          </div>
+          
+          {filteredPersonalRooms.length === 0 && !searchQuery ? (
+            <div className="text-center py-12 bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100 rounded-2xl shadow-lg border-2 border-purple-200">
+              <MessageSquare className="mx-auto h-12 w-12 text-purple-400" />
+              <h3 className="mt-4 text-lg font-medium text-gray-900">No personal chatrooms yet</h3>
+              <p className="mt-2 text-gray-600">Create a personal chatroom for general discussions</p>
+              <button
+                onClick={() => setShowPersonalRoomModal(true)}
+                className="mt-4 px-6 py-3 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg font-medium"
+              >
+                Create Personal Chatroom
+              </button>
+            </div>
+          ) : filteredPersonalRooms.length === 0 && searchQuery ? (
+            <div className="text-center py-12 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg border-2 border-purple-200">
+              <Search className="mx-auto h-12 w-12 text-purple-400" />
+              <h3 className="mt-4 text-lg font-medium text-gray-900">No chatrooms found</h3>
+              <p className="mt-2 text-gray-600">Try adjusting your search query</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredPersonalRooms.map((room) => (
+                <div
+                  key={room._id}
+                  className="bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-purple-200 hover:border-purple-400 relative group"
+                >
+                  <div
+                    onClick={() => openPersonalRoom(room)}
+                    className="cursor-pointer"
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex-1">
+                        {editingRoom === room._id ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={editRoomName}
+                              onChange={(e) => setEditRoomName(e.target.value)}
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter') {
+                                  handleEditRoomName(room._id, e);
+                                } else if (e.key === 'Escape') {
+                                  setEditingRoom(null);
+                                  setEditRoomName('');
+                                }
+                              }}
+                              className="flex-1 px-2 py-1 border border-purple-300 rounded text-sm font-semibold"
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <button
+                              onClick={(e) => handleEditRoomName(room._id, e)}
+                              className="p-1 text-green-600 hover:bg-green-50 rounded"
+                              title="Save"
+                            >
+                              <CheckCircle2 size={16} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingRoom(null);
+                                setEditRoomName('');
+                              }}
+                              className="p-1 text-red-600 hover:bg-red-50 rounded"
+                              title="Cancel"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                        ) : (
+                          <h3 className="text-lg font-semibold text-gray-900">{room.name}</h3>
+                        )}
+                        <p className="text-sm text-purple-600 mt-1 font-semibold">Personal Chatroom</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <MessageSquare size={20} className="text-purple-500 flex-shrink-0" />
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowRoomMenu(showRoomMenu === room._id ? null : room._id);
+                            }}
+                            className="p-1.5 hover:bg-purple-200 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                          >
+                            <MoreVertical size={18} className="text-purple-600" />
+                          </button>
+                          {showRoomMenu === room._id && (
+                            <div className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[160px]">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowAddMemberModal(room._id.toString());
+                                  setMemberUsername('');
+                                  setMemberEmail('');
+                                  setAddMemberBy('username');
+                                  setShowRoomMenu(null);
+                                }}
+                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <Users size={16} />
+                                Add Member
+                              </button>
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    // Get or generate group code for the chatroom
+                                    const response = await axios.get(`/api/chat/room/${room._id}/group-code`, {
+                                      headers: { Authorization: `Bearer ${token}` }
+                                    });
+                                    const groupCode = response.data.groupCode;
+                                    const inviteLink = `${window.location.origin}/join-chatroom/${groupCode}`;
+                                    
+                                    // Copy to clipboard
+                                    await navigator.clipboard.writeText(inviteLink);
+                                    showNotification('Invite link copied to clipboard!', 'success');
+                                  } catch (error) {
+                                    console.error('Error getting group code:', error);
+                                    showNotification('Failed to get invite link: ' + (error.response?.data?.error || error.message), 'error');
+                                  }
+                                  setShowRoomMenu(null);
+                                }}
+                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <Key size={16} />
+                                Copy Invite Link
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingRoom(room._id);
+                                  setEditRoomName(room.name);
+                                  setShowRoomMenu(null);
+                                }}
+                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <Edit2 size={16} />
+                                Edit Name
+                              </button>
+                              <button
+                                onClick={(e) => handleLeaveRoom(room._id, e)}
+                                disabled={leavingRoom === room._id}
+                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                {leavingRoom === room._id ? (
+                                  <Loader2 size={16} className="animate-spin" />
+                                ) : (
+                                  <LeaveIcon size={16} />
+                                )}
+                                Leave Room
+                              </button>
+                              <button
+                                onClick={(e) => handleDeletePersonalRoom(room._id, e)}
+                                disabled={deletingRoom === room._id}
+                                className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                {deletingRoom === room._id ? (
+                                  <Loader2 size={16} className="animate-spin" />
+                                ) : (
+                                  <Trash2 size={16} />
+                                )}
+                                Delete Room
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-purple-700 mb-2 font-medium">
+                      <Users size={16} />
+                      <span>
+                        {room.members && room.members.length > 0 
+                          ? `${room.members.length} member${room.members.length !== 1 ? 's' : ''}` 
+                          : '0 members'}
+                      </span>
+                    </div>
+                    {room.lastMessage && (
+                      <p className="text-xs text-gray-600 font-medium">
+                        Last active: {new Date(room.lastMessage).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </main>
 
       {/* Create Project Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
-            <h3 className="text-2xl font-bold mb-2">Select a Project You Want to Work On</h3>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-gradient-to-br from-white to-purple-50 rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto shadow-2xl border-2 border-purple-200">
+            <h3 className="text-2xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">Select a Project You Want to Work On</h3>
             <p className="text-sm text-gray-600 mb-6">
               Choose a GitHub repository. All contributors will be automatically invited to the chatroom.
             </p>
             
             {fetchingRepos ? (
               <div className="mb-4 flex items-center justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-primary-600" />
+                <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
                 <span className="ml-2 text-gray-600">Loading repositories...</span>
               </div>
             ) : repositories.length > 0 ? (
@@ -896,8 +1340,8 @@ export default function Dashboard() {
                       setSelectedRepo(repo);
                       setRepoInput(repo.fullName);
                     }}
-                    className={`p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 ${
-                      selectedRepo?.fullName === repo.fullName ? 'bg-primary-50 border-primary-200' : ''
+                    className={`p-3 border-b border-purple-100 cursor-pointer hover:bg-purple-50 transition-colors ${
+                      selectedRepo?.fullName === repo.fullName ? 'bg-gradient-to-r from-purple-100 to-lavender-100 border-purple-300' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -906,7 +1350,7 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-500">{repo.fullName}</p>
                       </div>
                       {selectedRepo?.fullName === repo.fullName && (
-                        <span className="text-primary-600">✓</span>
+                        <span className="text-purple-600 font-bold">✓</span>
                       )}
                     </div>
                   </div>
@@ -947,7 +1391,7 @@ export default function Dashboard() {
                 <button
                   type="submit"
                   disabled={!repoInput.trim() || creatingProject}
-                  className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg font-medium"
                 >
                   {creatingProject ? 'Creating...' : 'Select Project'}
                 </button>
@@ -959,12 +1403,12 @@ export default function Dashboard() {
 
       {/* Invite Members Modal */}
       {showInviteModal && selectedProject && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg w-full max-w-lg max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gradient-to-br from-white to-purple-50 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl border-2 border-purple-200">
             <div className="p-6 pb-4 flex-shrink-0">
-              <h3 className="text-2xl font-bold mb-2">Add Team Members</h3>
+              <h3 className="text-2xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">Add Team Members</h3>
               <p className="text-sm text-gray-600">
-                Invite collaborators to join <span className="font-semibold">{selectedProject.name}</span>
+                Invite collaborators to join <span className="font-semibold text-purple-700">{selectedProject.name}</span>
               </p>
             </div>
 
@@ -974,7 +1418,7 @@ export default function Dashboard() {
               {selectedProject?.members && selectedProject.members.length > 0 && (
                 <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
                   <div className="flex items-center gap-3 mb-3">
-                    <Users className="text-primary-600" size={20} />
+                    <Users className="text-purple-600" size={20} />
                     <h4 className="font-semibold text-gray-900">Current Contributors ({selectedProject.members.length})</h4>
                   </div>
                   <div className="space-y-2 max-h-32 overflow-y-auto">
@@ -1026,7 +1470,7 @@ export default function Dashboard() {
               {/* Group Code Invitation */}
               <div className="border border-gray-200 rounded-lg p-4 bg-gradient-to-br from-primary-50 to-blue-50">
                 <div className="flex items-center gap-3 mb-3">
-                  <Key className="text-primary-600" size={20} />
+                  <Key className="text-purple-600" size={20} />
                   <h4 className="font-semibold text-gray-900">Group Code</h4>
                 </div>
                 <p className="text-sm text-gray-600 mb-3">
@@ -1034,7 +1478,7 @@ export default function Dashboard() {
                 </p>
                 {projectGroupCode ? (
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 px-4 py-3 bg-white border-2 border-primary-300 rounded-lg text-center">
+                    <div className="flex-1 px-4 py-3 bg-white border-2 border-purple-300 rounded-lg text-center font-mono font-semibold text-purple-700">
                       <div className="text-2xl font-bold text-primary-700 font-mono tracking-wider">
                         {projectGroupCode}
                       </div>
@@ -1315,6 +1759,220 @@ export default function Dashboard() {
           animation: slide-in 0.3s ease-out;
         }
       `}</style>
+
+      {/* Create Chatroom Modal */}
+      {showCreateChatroomModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-2xl font-bold text-gray-900">Create New Chatroom</h3>
+              <button
+                onClick={() => {
+                  setShowCreateChatroomModal(null);
+                  setNewChatroomName('');
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Chatroom Name
+              </label>
+              <input
+                type="text"
+                value={newChatroomName}
+                onChange={(e) => setNewChatroomName(e.target.value)}
+                placeholder="Enter chatroom name..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && newChatroomName.trim()) {
+                    handleCreateProjectChatroom(showCreateChatroomModal, newChatroomName);
+                  }
+                }}
+                autoFocus
+              />
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowCreateChatroomModal(null);
+                  setNewChatroomName('');
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                disabled={creatingChatroom}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!newChatroomName.trim()) {
+                    showNotification('Please enter a chatroom name', 'error');
+                    return;
+                  }
+                  setCreatingChatroom(true);
+                  await handleCreateProjectChatroom(showCreateChatroomModal, newChatroomName);
+                  setCreatingChatroom(false);
+                  setShowCreateChatroomModal(null);
+                  setNewChatroomName('');
+                }}
+                disabled={creatingChatroom || !newChatroomName.trim()}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {creatingChatroom ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create Chatroom'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Member Modal */}
+      {showAddMemberModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowAddMemberModal(null);
+              setMemberUsername('');
+              setMemberEmail('');
+              setAddMemberBy('username');
+            }
+          }}
+        >
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">Add Member to Chatroom</h3>
+                {showAddMemberModal && (
+                  <p className="text-xs text-gray-500 mt-1">Room ID: {showAddMemberModal}</p>
+                )}
+              </div>
+              <button
+                onClick={() => {
+                  setShowAddMemberModal(null);
+                  setMemberUsername('');
+                  setMemberEmail('');
+                  setAddMemberBy('username');
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                disabled={addingMember}
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <div className="flex gap-2 mb-3">
+                <button
+                  onClick={() => {
+                    setAddMemberBy('username');
+                    setMemberEmail('');
+                  }}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    addMemberBy === 'username'
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  By Username
+                </button>
+                <button
+                  onClick={() => {
+                    setAddMemberBy('email');
+                    setMemberUsername('');
+                  }}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    addMemberBy === 'email'
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  By Email
+                </button>
+              </div>
+              
+              {addMemberBy === 'username' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Username
+                  </label>
+                  <input
+                    type="text"
+                    value={memberUsername}
+                    onChange={(e) => setMemberUsername(e.target.value)}
+                    placeholder="Enter username..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && memberUsername.trim()) {
+                        handleAddMemberToChatroom(showAddMemberModal);
+                      }
+                    }}
+                    autoFocus
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Email
+                  </label>
+                  <input
+                    type="email"
+                    value={memberEmail}
+                    onChange={(e) => setMemberEmail(e.target.value)}
+                    placeholder="Enter email..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && memberEmail.trim()) {
+                        handleAddMemberToChatroom(showAddMemberModal);
+                      }
+                    }}
+                    autoFocus
+                  />
+                </div>
+              )}
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowAddMemberModal(null);
+                  setMemberUsername('');
+                  setMemberEmail('');
+                  setAddMemberBy('username');
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                disabled={addingMember}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleAddMemberToChatroom(showAddMemberModal)}
+                disabled={addingMember || (addMemberBy === 'username' ? !memberUsername.trim() : !memberEmail.trim())}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {addingMember ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Adding...
+                  </>
+                ) : (
+                  'Add Member'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

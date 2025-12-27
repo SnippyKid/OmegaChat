@@ -1,10 +1,42 @@
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 export default function Login() {
-  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    // Check for error in URL params
+    const errorParam = searchParams.get('error');
+    const errorDetails = searchParams.get('details');
+    
+    if (errorParam === 'auth_failed') {
+      setError('Authentication failed. Please try again.');
+    } else if (errorParam === 'oauth_not_configured') {
+      setError('GitHub OAuth is not configured. Please set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in the backend .env file.');
+    } else if (errorParam === 'oauth_strategy_failed') {
+      setError('GitHub OAuth strategy failed to initialize. Please check your backend configuration.');
+    } else if (errorParam === 'oauth_failed') {
+      let errorMsg = 'GitHub OAuth authentication failed. ';
+      if (errorDetails) {
+        if (errorDetails === 'no_user') {
+          errorMsg += 'No user was returned from GitHub.';
+        } else if (errorDetails.includes('Database not connected') || errorDetails.includes('buffering timed out')) {
+          errorMsg += 'MongoDB is not connected. Please ensure MongoDB is running and check your MONGODB_URI in backend/.env file.';
+        } else {
+          errorMsg += decodeURIComponent(errorDetails);
+        }
+      } else {
+        errorMsg += 'Please check that your GitHub OAuth app callback URL matches: http://localhost:5000/api/auth/github/callback';
+      }
+      setError(errorMsg);
+    }
+  }, [searchParams]);
 
   const handleGitHubLogin = () => {
-    window.location.href = 'http://localhost:5000/api/auth/github';
+    setError(null);
+    // Redirect immediately - no health check, no waiting
+    window.location.href = '/api/auth/github';
   };
 
   return (
@@ -14,6 +46,12 @@ export default function Login() {
           <h1 className="text-4xl font-bold text-primary-900 mb-2">Ω Omega Chat</h1>
           <p className="text-gray-600">Developer collaboration with AI</p>
         </div>
+        
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {error}
+          </div>
+        )}
         
         <div className="space-y-4">
           <button

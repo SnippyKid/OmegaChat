@@ -32,76 +32,141 @@ export function setupSocketIO(io) {
   });
 
   io.on('connection', async (socket) => {
-    console.log(`✅ User connected: ${socket.user.username} (${socket.userId})`);
-    
-    // Update user online status
-    await User.findByIdAndUpdate(socket.userId, { online: true, lastSeen: new Date() });
-    
-    // Join user's project rooms
-    const user = await User.findById(socket.userId).populate('projects');
-    if (user.projects) {
-      user.projects.forEach(project => {
-        if (project.chatRoom) {
-          socket.join(`room:${project.chatRoom}`);
-          console.log(`📦 User joined room: ${project.chatRoom}`);
+    try {
+      console.log(`✅ User connected: ${socket.user?.username || 'Unknown'} (${socket.userId})`);
+      
+      // Update user online status
+      try {
+        await User.findByIdAndUpdate(socket.userId, { online: true, lastSeen: new Date() });
+      } catch (updateError) {
+        console.error('Error updating user online status:', updateError);
+      }
+      
+      // Join user's project rooms
+      try {
+        const user = await User.findById(socket.userId).populate('projects');
+        if (user && user.projects) {
+          user.projects.forEach(project => {
+            if (project && project.chatRoom) {
+              socket.join(`room:${project.chatRoom}`);
+              console.log(`📦 User joined room: ${project.chatRoom}`);
+            }
+          });
         }
-      });
+      } catch (projectError) {
+        console.error('Error joining user project rooms:', projectError);
+      }
+    } catch (connectionError) {
+      console.error('Error in socket connection handler:', connectionError);
+      socket.emit('error', { message: 'Connection error occurred' });
     }
     
     // Handle joining a room
     socket.on('join_room', async (roomId) => {
-      const room = await ChatRoom.findById(roomId);
-      if (!room) {
-        return socket.emit('error', { message: 'Room not found' });
-      }
+      try {
+        if (!roomId) {
+          return socket.emit('error', { message: 'Room ID is required' });
+        }
+        
+        const room = await ChatRoom.findById(roomId);
+        if (!room) {
+          return socket.emit('error', { message: 'Room not found' });
+        }
       
       // Check if user is a member (handle both ObjectId and string comparison)
-      const isMember = room.members.some(memberId => 
-        memberId.toString() === socket.userId.toString()
-      );
+      let isMember = room.members.some(memberId => {
+        const memberIdStr = typeof memberId === 'object' && memberId._id 
+          ? memberId._id.toString() 
+          : (memberId?.toString() || memberId);
+        return memberIdStr === socket.userId.toString();
+      });
+      
+      // Safety fix: If user is not a member but room has no project (personal room),
+      // and room was just created, add them automatically
+      if (!isMember && !room.project && room.members.length === 0) {
+        console.warn('Auto-adding user to empty personal room via socket:', {
+          userId: socket.userId,
+          roomId: roomId
+        });
+        const mongoose = (await import('mongoose')).default;
+        const userIdObjectId = typeof socket.userId === 'string' 
+          ? new mongoose.Types.ObjectId(socket.userId)
+          : socket.userId;
+        room.members.push(userIdObjectId);
+        await room.save();
+        isMember = true;
+      }
       
       if (isMember) {
-        socket.join(`room:${roomId}`);
+        const roomName = `room:${roomId}`;
+        socket.join(roomName);
+        
+        // Get all sockets in room for logging
+        const roomSockets = await io.in(roomName).fetchSockets();
+        console.log(`✅ User ${socket.user.username} (${socket.userId}) joined room ${roomId} - Total clients in room: ${roomSockets.length}`);
+        
         socket.emit('room_joined', { roomId });
-        socket.to(`room:${roomId}`).emit('user_joined', {
+        socket.to(roomName).emit('user_joined', {
           userId: socket.userId,
           username: socket.user.username
         });
         
-        // Send ChaiWala welcome message to everyone in the room
+        // Send ChaiWala welcome message only to the new user (not everyone)
+        // Check if user was already welcomed recently to avoid spam
         try {
-          const welcomeContent = generateWelcomeMessage(socket.user.username, room.name);
+          // Check for any recent ChaiWala messages (within last 10 minutes)
+          const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+          const recentChaiWalaMessages = room.messages
+            .filter(msg => {
+              if (msg.type !== 'chaiwala_bot') return false;
+              const msgDate = msg.createdAt ? new Date(msg.createdAt) : null;
+              return msgDate && msgDate > tenMinutesAgo;
+            });
           
-          const welcomeMessage = {
-            user: null, // Will be set to ChaiWala bot
-            content: welcomeContent,
-            type: 'chaiwala_bot'
-          };
+          // Only send welcome if there are no recent ChaiWala messages (to avoid spam)
+          // This prevents multiple welcomes when users reconnect or rejoin
+          const shouldWelcome = recentChaiWalaMessages.length === 0;
           
-          room.messages.push(welcomeMessage);
-          room.lastMessage = new Date();
-          await room.save();
-          
-          const updatedRoom = await ChatRoom.findById(roomId)
-            .populate('messages.user', 'username avatar');
-          
-          const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
-          
-          // Override user info for ChaiWala bot messages
-          savedMessage.user = {
-            _id: 'chaiwala-bot',
-            username: 'ChaiWala',
-            avatar: '/avatars/chaiwala-avatar.png'
-          };
-          
-          // Emit to all users in the room (including the person who just joined)
-          io.to(`room:${roomId}`).emit('chaiwala_welcome', {
-            message: savedMessage,
-            roomId,
-            newMember: socket.user.username
-          });
-          
-          console.log(`☕ ChaiWala welcomed ${socket.user.username} in room ${roomId}`);
+          if (shouldWelcome) {
+            const welcomeContent = generateWelcomeMessage(socket.user.username, room.name);
+            
+            // Create message object for immediate emission (don't wait for DB save)
+            const messageForClient = {
+              _id: `temp-${Date.now()}`,
+              content: welcomeContent,
+              type: 'chaiwala_bot',
+              user: {
+                _id: 'chaiwala-bot',
+                username: 'ChaiWala',
+                avatar: '/avatars/chaiwala-avatar.png'
+              },
+              createdAt: new Date(),
+              updatedAt: new Date()
+            };
+            
+            // Emit immediately to the new user only
+            socket.emit('chaiwala_welcome', {
+              message: messageForClient,
+              roomId,
+              newMember: socket.user.username
+            });
+            
+            // Save to database in background (don't block)
+            const welcomeMessage = {
+              content: welcomeContent,
+              type: 'chaiwala_bot',
+              createdAt: new Date(),
+              updatedAt: new Date()
+            };
+            
+            room.messages.push(welcomeMessage);
+            room.lastMessage = new Date();
+            room.save().catch(err => {
+              console.error('Error saving ChaiWala welcome message:', err);
+            });
+            
+            console.log(`☕ ChaiWala welcomed ${socket.user.username} in room ${roomId}`);
+          }
         } catch (error) {
           console.error('Error sending ChaiWala welcome:', error);
           // Don't block the join process if welcome fails
@@ -110,6 +175,10 @@ export function setupSocketIO(io) {
         console.log(`✅ User ${socket.user.username} joined room ${roomId}`);
       } else {
         socket.emit('error', { message: 'Not a member of this room' });
+      }
+      } catch (joinError) {
+        console.error('Error in join_room handler:', joinError);
+        socket.emit('error', { message: 'Failed to join room: ' + (joinError.message || 'Unknown error') });
       }
     });
     
@@ -126,6 +195,20 @@ export function setupSocketIO(io) {
     socket.on('send_message', async (data) => {
       try {
         const { roomId, content, replyTo } = data;
+        
+        // Validate input
+        if (!roomId) {
+          return socket.emit('error', { message: 'Room ID is required' });
+        }
+        
+        if (!content || !content.trim()) {
+          return socket.emit('error', { message: 'Message content cannot be empty' });
+        }
+        
+        // Limit message length
+        if (content.length > 10000) {
+          return socket.emit('error', { message: 'Message is too long (max 10,000 characters)' });
+        }
         
         const room = await ChatRoom.findById(roomId);
         if (!room) {
@@ -168,12 +251,16 @@ export function setupSocketIO(io) {
         if (!savedMessage.starredBy) savedMessage.starredBy = [];
         
         // Emit to all users in the room (including sender)
-        io.to(`room:${roomId}`).emit('new_message', {
+        const roomName = `room:${roomId}`;
+        const roomSockets = await io.in(roomName).fetchSockets();
+        console.log(`📨 Broadcasting message to ${roomSockets.length} clients in room ${roomId}`);
+        
+        io.to(roomName).emit('new_message', {
           message: savedMessage,
           roomId
         });
         
-        console.log(`📨 Message sent in room ${roomId} by ${socket.user.username}`);
+        console.log(`✅ Message sent in room ${roomId} by ${socket.user.username} to ${roomSockets.length} clients`);
       } catch (error) {
         console.error('Error sending message:', error);
         socket.emit('error', { message: 'Failed to send message' });
@@ -520,7 +607,11 @@ Key File Contents:`;
             avatar: '/avatars/dk-avatar.png'
           };
           
-          io.to(`room:${roomId}`).emit('dk_bot_response', {
+          const roomName = `room:${roomId}`;
+          const roomSockets = await io.in(roomName).fetchSockets();
+          console.log(`📊 Broadcasting DK bot response to ${roomSockets.length} client(s) in room ${roomId}`);
+          
+          io.to(roomName).emit('dk_bot_response', {
             message: savedMessage,
             roomId
           });

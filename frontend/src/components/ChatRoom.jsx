@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
 import axios from 'axios';
-import { Send, Mic, ArrowLeft, Users, Bot, Trash2, Edit2, X, Reply, Pin, Copy, Smile, Search, Image as ImageIcon, Paperclip, Check, CheckCheck } from 'lucide-react';
+import { Send, Mic, ArrowLeft, Users, Bot, Trash2, Edit2, X, Reply, Pin, Copy, Smile, Search, Image as ImageIcon, Paperclip, Check, CheckCheck, GitBranch, AlertCircle, Loader2, CheckCircle2, UserPlus } from 'lucide-react';
 
 export default function ChatRoom() {
   const { roomId } = useParams();
@@ -50,6 +50,34 @@ export default function ChatRoom() {
   const [searchHistory, setSearchHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [messagePage, setMessagePage] = useState(0);
+  const messagesContainerRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const roomCheckIntervalRef = useRef(null);
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
+  const [memberUsername, setMemberUsername] = useState('');
+  const [memberEmail, setMemberEmail] = useState('');
+  const [addingMember, setAddingMember] = useState(false);
+  const [addMemberBy, setAddMemberBy] = useState('username');
+  const [showCommitModal, setShowCommitModal] = useState(null); // messageId
+  const [commitFilePath, setCommitFilePath] = useState('');
+  const [commitMessage, setCommitMessage] = useState('');
+  const [committing, setCommitting] = useState(false);
+  const [fileExists, setFileExists] = useState(false);
+  const [checkingFile, setCheckingFile] = useState(false);
+  const [commitError, setCommitError] = useState(null);
+  const [commitSuccess, setCommitSuccess] = useState(false);
+  const [showJoinCodeModal, setShowJoinCodeModal] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joiningByCode, setJoiningByCode] = useState(false);
+  const [showShareCodeModal, setShowShareCodeModal] = useState(false);
+  const [roomGroupCode, setRoomGroupCode] = useState(null);
+  const [roomInviteLink, setRoomInviteLink] = useState(null);
+  const [loadingGroupCode, setLoadingGroupCode] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // Close mentions dropdown when clicking outside
   useEffect(() => {
@@ -71,20 +99,169 @@ export default function ChatRoom() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMentions, showEmojiPicker]);
 
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  const fetchMessages = useCallback(async (skip = 0, append = false) => {
+    if (!roomId || !token) return;
+    
+    try {
+      const limit = 50;
+      const response = await axios.get(`/api/chat/room/${roomId}/messages`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { limit, skip }
+      });
+      
+      const newMessages = response.data.messages || [];
+      
+      if (append) {
+        setMessages(prev => {
+          // Merge and deduplicate
+          const existingIds = new Set(prev.map(m => m._id?.toString() || m._id));
+          const uniqueNew = newMessages.filter(m => !existingIds.has(m._id?.toString() || m._id));
+          return [...uniqueNew, ...prev];
+        });
+      } else {
+        setMessages(newMessages);
+        setTimeout(() => scrollToBottom(), 100);
+      }
+      
+      // Check if there are more messages
+      setHasMoreMessages(newMessages.length === limit);
+      setMessagePage(Math.floor(skip / limit));
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+    }
+  }, [roomId, token, scrollToBottom]);
+
+  // Format relative time
+  const formatRelativeTime = useCallback((date) => {
+    const now = new Date();
+    const messageDate = new Date(date);
+    const diffInSeconds = Math.floor((now - messageDate) / 1000);
+    
+    if (diffInSeconds < 60) return 'just now';
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+    if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+    
+    // For older messages, show date
+    const isSameYear = now.getFullYear() === messageDate.getFullYear();
+    if (isSameYear) {
+      return messageDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    return messageDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }, []);
+
   useEffect(() => {
     // Initialize socket connection - use window location for proper proxy handling
     const socketUrl = import.meta.env.VITE_SOCKET_URL || window.location.origin.replace('5173', '5000');
     const newSocket = io(socketUrl, {
       auth: { token },
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: Infinity,
+      timeout: 20000,
+      forceNew: false
     });
 
-    newSocket.on('connect', () => {
-      console.log('Connected to server');
-      if (roomId) {
+    const joinRoom = () => {
+      if (roomId && newSocket.connected) {
+        console.log('Joining room:', roomId);
         newSocket.emit('join_room', roomId);
-        // Refresh messages when socket connects (room already fetched above)
+      }
+    };
+
+    newSocket.on('connect', () => {
+      console.log('✅ Socket connected to server, socket ID:', newSocket.id);
+      joinRoom();
+      // Refresh messages when socket connects
+      if (roomId) {
         fetchMessages();
+      }
+    });
+
+    // Periodically verify we're still in the room (every 30 seconds)
+    roomCheckIntervalRef.current = setInterval(() => {
+      if (roomId && newSocket.connected) {
+        console.log('🔄 Periodic room check - ensuring we are still in room:', roomId);
+        joinRoom();
+      }
+    }, 30000);
+
+    newSocket.on('disconnect', (reason) => {
+      console.warn('⚠️ Socket disconnected:', reason);
+      if (reason === 'io server disconnect') {
+        // Server disconnected the socket, reconnect manually
+        newSocket.connect();
+      }
+    });
+
+    newSocket.on('reconnect', (attemptNumber) => {
+      console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
+      joinRoom();
+      // Refresh messages on reconnect to catch any missed messages
+      if (roomId) {
+        fetchMessages();
+      }
+    });
+
+    newSocket.on('reconnect_attempt', (attemptNumber) => {
+      console.log('🔄 Reconnection attempt', attemptNumber);
+    });
+
+    newSocket.on('reconnect_error', (error) => {
+      console.error('❌ Reconnection error:', error);
+    });
+
+    newSocket.on('reconnect_failed', () => {
+      console.error('❌ Reconnection failed');
+    });
+
+    newSocket.on('room_joined', (data) => {
+      console.log('✅ Successfully joined room:', data.roomId);
+    });
+
+    newSocket.on('error', (error) => {
+      console.error('❌ Socket error:', error);
+    });
+
+    // Listen for new members being added
+    newSocket.on('member_added', (data) => {
+      console.log('👤 New member added:', data);
+      if (data.roomId === roomId) {
+        // Refresh room data to get updated member list
+        fetchRoom();
+      }
+    });
+
+    // Listen for users joining the room
+    newSocket.on('user_joined', (data) => {
+      console.log('👤 User joined room:', data);
+      // Refresh room data to get updated member list
+      if (roomId) {
+        fetchRoom();
+      }
+    });
+
+    // Listen for users leaving the room
+    newSocket.on('member_left', (data) => {
+      console.log('👤 Member left room:', data);
+      if (data.roomId === roomId) {
+        // Refresh room data to get updated member list
+        fetchRoom();
+      }
+    });
+
+    // Listen for user_left event (from socket handler)
+    newSocket.on('user_left', (data) => {
+      console.log('👤 User left room:', data);
+      if (roomId) {
+        // Refresh room data to get updated member list
+        fetchRoom();
       }
     });
 
@@ -93,7 +270,9 @@ export default function ChatRoom() {
       setMessages(prev => {
         const exists = prev.some(msg => msg._id === data.message._id);
         if (!exists) {
-          return [...prev, data.message];
+          // Remove optimistic message if exists (by checking if temp message with same content exists)
+          const filtered = prev.filter(msg => !(msg.pending && msg.content === data.message.content && (msg.user?._id === data.message.user?._id || msg.user === data.message.user)));
+          return [...filtered, data.message];
         }
         return prev;
       });
@@ -243,10 +422,37 @@ export default function ChatRoom() {
       alert('Failed to connect to chat server. Please refresh the page.');
     });
 
+    // Ensure room is joined whenever roomId changes or socket reconnects
+    const handleRoomJoin = () => {
+      if (roomId && newSocket.connected) {
+        console.log('🔄 Ensuring room is joined:', roomId);
+        newSocket.emit('join_room', roomId);
+      }
+    };
+
+    // Rejoin room if socket reconnects
+    newSocket.on('reconnect', () => {
+      console.log('🔄 Socket reconnected, rejoining room');
+      handleRoomJoin();
+      // Refresh messages on reconnect to catch any missed messages
+      if (roomId) {
+        fetchMessages();
+      }
+    });
+    
+    // Also rejoin when roomId changes
+    if (roomId && newSocket.connected) {
+      handleRoomJoin();
+    }
+
     setSocket(newSocket);
 
     return () => {
-      newSocket.emit('leave_room', roomId);
+      console.log('🧹 Cleaning up socket connection');
+      // Leave room before disconnecting
+      if (roomId && newSocket.connected) {
+        newSocket.emit('leave_room', roomId);
+      }
       newSocket.disconnect();
       // Cleanup speech recognition
       if (recognitionRef.current) {
@@ -258,28 +464,36 @@ export default function ChatRoom() {
         clearTimeout(aiTypingTimeoutRef.current);
         aiTypingTimeoutRef.current = null;
       }
+      // Cleanup typing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      // Cleanup room check interval
+      if (roomCheckIntervalRef.current) {
+        clearInterval(roomCheckIntervalRef.current);
+        roomCheckIntervalRef.current = null;
+      }
       setIsTyping(false);
     };
   }, [roomId, token]);
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  const fetchMessages = useCallback(async () => {
-    if (!roomId || !token) return;
-    
-    try {
-      const response = await axios.get(`/api/chat/room/${roomId}/messages`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setMessages(response.data.messages || []);
-      setTimeout(() => scrollToBottom(), 100);
-    } catch (error) {
-      console.error('Error fetching messages:', error);
-      // Don't set error here, just log it - messages can be empty
+  // Fetch messages when roomId or token changes (after fetchMessages is defined)
+  useEffect(() => {
+    if (roomId && token) {
+      fetchMessages();
     }
-  }, [roomId, token, scrollToBottom]);
+  }, [roomId, token, fetchMessages]);
+
+  // Load more messages (for infinite scroll)
+  const loadMoreMessages = useCallback(async () => {
+    if (loadingMore || !hasMoreMessages) return;
+    
+    setLoadingMore(true);
+    const nextSkip = (messagePage + 1) * 50;
+    await fetchMessages(nextSkip, true);
+    setLoadingMore(false);
+  }, [loadingMore, hasMoreMessages, messagePage, fetchMessages]);
 
   const fetchRoom = useCallback(async () => {
     if (!roomId) {
@@ -298,7 +512,8 @@ export default function ChatRoom() {
       setLoading(true);
       setError(null);
       const response = await axios.get(`/api/chat/room/${roomId}`, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 10000
       });
       
       if (response.data && response.data.room) {
@@ -312,8 +527,14 @@ export default function ChatRoom() {
       const errorMessage = error.response?.data?.error || error.message || 'Failed to load chat room';
       setError(errorMessage);
       
-      // If it's a 403 or 404, redirect after a delay
-      if (error.response?.status === 403 || error.response?.status === 404) {
+      // If it's a 403, show a helpful message and redirect
+      if (error.response?.status === 403) {
+        setError('You are not a member of this room. Please ask a member to add you, or return to the dashboard.');
+        setTimeout(() => {
+          navigate('/');
+        }, 5000);
+      } else if (error.response?.status === 404) {
+        setError('Room not found');
         setTimeout(() => {
           navigate('/');
         }, 3000);
@@ -322,6 +543,26 @@ export default function ChatRoom() {
       setLoading(false);
     }
   }, [roomId, token, navigate]);
+
+  // Debounced typing indicator
+  const handleTyping = useCallback(() => {
+    if (!socket || !roomId) return;
+    
+    // Emit typing event
+    socket.emit('typing', { roomId, isTyping: true });
+    
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    
+    // Set timeout to stop typing after 3 seconds
+    typingTimeoutRef.current = setTimeout(() => {
+      if (socket && roomId) {
+        socket.emit('typing', { roomId, isTyping: false });
+      }
+    }, 3000);
+  }, [socket, roomId]);
 
   // Fetch room and messages immediately when component mounts or roomId changes
   useEffect(() => {
@@ -498,6 +739,135 @@ export default function ChatRoom() {
     }
   };
 
+  const handleGetGroupCode = async () => {
+    if (!roomId) {
+      alert('Invalid room ID');
+      return;
+    }
+    
+    setLoadingGroupCode(true);
+    try {
+      const response = await axios.get(`/api/chat/room/${roomId}/group-code`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      if (response.data.success) {
+        setRoomGroupCode(response.data.groupCode);
+        setRoomInviteLink(response.data.inviteLink);
+        setShowShareCodeModal(true);
+      } else {
+        throw new Error(response.data?.error || 'Failed to get group code');
+      }
+    } catch (error) {
+      console.error('Error getting group code:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to get group code';
+      alert(errorMessage);
+    } finally {
+      setLoadingGroupCode(false);
+    }
+  };
+
+  const copyGroupCode = () => {
+    if (roomGroupCode) {
+      navigator.clipboard.writeText(roomGroupCode);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    }
+  };
+
+  const copyInviteLink = () => {
+    if (roomInviteLink) {
+      navigator.clipboard.writeText(roomInviteLink);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    }
+  };
+
+  const handleJoinByCode = async () => {
+    if (!joinCode.trim()) {
+      alert('Please enter a group code');
+      return;
+    }
+    
+    setJoiningByCode(true);
+    try {
+      const normalizedCode = joinCode.trim().toUpperCase();
+      const response = await axios.post(`/api/chat/join-code/${normalizedCode}`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      if (response.data.success) {
+        const joinedRoomId = response.data.room?._id || response.data.room;
+        
+        // If joined a different room, navigate to it
+        if (joinedRoomId && joinedRoomId.toString() !== roomId) {
+          navigate(`/chat/${joinedRoomId}`);
+        } else {
+          // If joined the current room, refresh room data
+          await fetchRoom();
+          setShowJoinCodeModal(false);
+          setJoinCode('');
+          alert('Successfully joined the chatroom!');
+        }
+      } else {
+        throw new Error(response.data?.error || 'Failed to join chatroom');
+      }
+    } catch (error) {
+      console.error('Error joining by code:', error);
+      const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to join chatroom';
+      alert(errorMessage);
+    } finally {
+      setJoiningByCode(false);
+    }
+  };
+
+  const handleAddMemberToChatroom = async () => {
+    if (!roomId) {
+      alert('Invalid room ID');
+      return;
+    }
+    
+    if (addMemberBy === 'username' && !memberUsername.trim()) {
+      alert('Please enter a username');
+      return;
+    }
+    if (addMemberBy === 'email' && !memberEmail.trim()) {
+      alert('Please enter an email');
+      return;
+    }
+    
+    setAddingMember(true);
+    try {
+      const payload = addMemberBy === 'username' 
+        ? { username: memberUsername.trim() }
+        : { email: memberEmail.trim() };
+      
+      const response = await axios.post(`/api/chat/${roomId}/members/add`, 
+        payload,
+        { 
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 10000
+        }
+      );
+      
+      if (response.data && response.data.success) {
+        // Room will be refreshed automatically via socket 'member_added' event
+        setShowAddMemberModal(false);
+        setMemberUsername('');
+        setMemberEmail('');
+        setAddMemberBy('username');
+      } else {
+        throw new Error(response.data?.error || 'Failed to add member');
+      }
+    } catch (error) {
+      console.error('Error adding member:', error);
+      const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to add member';
+      alert(errorMessage);
+    } finally {
+      setAddingMember(false);
+    }
+  };
+
   const handleDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -591,11 +961,36 @@ export default function ChatRoom() {
       }
     }
 
+    // Optimistic UI update - add message immediately
+    const tempId = `temp-${Date.now()}-${Math.random()}`;
+    const optimisticMessage = {
+      _id: tempId,
+      user: user,
+      content: messageContent,
+      createdAt: new Date().toISOString(),
+      replyTo: replyToMessage || null,
+      pending: true
+    };
+    
+    setMessages(prev => [...prev, optimisticMessage]);
+    scrollToBottom();
+    
+    // Clear input and reply immediately
+    const messageToSend = messageContent;
+    const replyToId = replyToMessage?._id || null;
+    setInputMessage('');
+    if (replyToMessage) {
+      setReplyToMessage(null);
+    }
+    
+    // Send via socket
     socket.emit('send_message', {
       roomId,
-      content: messageContent,
-      replyTo: replyToMessage?._id || null
+      content: messageToSend,
+      replyTo: replyToId
     });
+    
+    // Remove optimistic message when real message arrives (handled in socket event)
     
     if (replyToMessage) {
       setReplyToMessage(null);
@@ -664,6 +1059,11 @@ export default function ChatRoom() {
   const handleInputChange = (e) => {
     const value = e.target.value;
     setInputMessage(value);
+    
+    // Debounced typing indicator
+    if (value.trim() && socket && roomId) {
+      handleTyping();
+    }
     
     // Check for @ mention trigger
     const cursorPosition = e.target.selectionStart;
@@ -1044,7 +1444,7 @@ export default function ChatRoom() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100">
       {/* Sidebar */}
       <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200">
@@ -1077,9 +1477,47 @@ export default function ChatRoom() {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-3">
-            <Users size={16} />
-            Members ({room?.members && room.members.length > 0 ? room.members.length : 0})
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <Users size={16} />
+              Members ({room?.members && room.members.length > 0 ? room.members.length : 0})
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleGetGroupCode}
+                disabled={loadingGroupCode}
+                className="p-1.5 text-green-600 hover:bg-green-50 rounded transition-colors disabled:opacity-50"
+                title="Share group code"
+              >
+                {loadingGroupCode ? (
+                  <div className="w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Copy size={16} />
+                )}
+              </button>
+              <button
+                onClick={() => {
+                  setShowJoinCodeModal(true);
+                  setJoinCode('');
+                }}
+                className="p-1.5 text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                title="Join another chatroom via code"
+              >
+                <UserPlus size={16} />
+              </button>
+              <button
+                onClick={() => {
+                  setShowAddMemberModal(true);
+                  setMemberUsername('');
+                  setMemberEmail('');
+                  setAddMemberBy('username');
+                }}
+                className="p-1.5 text-primary-600 hover:bg-primary-50 rounded transition-colors"
+                title="Add member"
+              >
+                <Users size={16} />
+              </button>
+            </div>
           </div>
           <div className="space-y-2">
             {room?.members && room.members.length > 0 ? (
@@ -1119,7 +1557,7 @@ export default function ChatRoom() {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col bg-white shadow-lg">
         {/* Pinned Messages Bar */}
         {pinnedMessages.length > 0 && (
           <div className="bg-yellow-50 border-b border-yellow-200 p-2">
@@ -1237,12 +1675,19 @@ export default function ChatRoom() {
 
         {/* Messages */}
         <div 
-          className="flex-1 overflow-y-auto p-4 space-y-4"
+          ref={messagesContainerRef}
+          className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onScroll={(e) => {
-            // Auto-mark messages as read when they come into view
             const container = e.target;
+            
+            // Infinite scroll - load more when near top
+            if (container.scrollTop < 100 && hasMoreMessages && !loadingMore) {
+              loadMoreMessages();
+            }
+            
+            // Auto-mark messages as read when they come into view
             const containerRect = container.getBoundingClientRect();
             const visibleMessages = messages.filter(msg => {
               const element = document.getElementById(`message-${msg._id}`);
@@ -1296,6 +1741,11 @@ export default function ChatRoom() {
             </div>
           )}
 
+          {loadingMore && (
+            <div className="flex justify-center py-4">
+              <div className="text-sm text-gray-500 animate-pulse">Loading older messages...</div>
+            </div>
+          )}
           {messages.map((message) => {
             const messageUserId = message.user?._id || message.user;
             const isAIMessage = message.type === 'ai_code' || message.user?.username === 'Omega AI' || message.user?.username === 'omega';
@@ -1553,23 +2003,42 @@ export default function ChatRoom() {
                           <span className="text-xs text-gray-400 font-mono uppercase tracking-wide font-bold">
                             {message.aiResponse.language || 'code'}
                           </span>
-                          <button
-                            onClick={(e) => {
-                              navigator.clipboard.writeText(message.aiResponse.code);
-                              // Better feedback
-                              const btn = e.target;
-                              const originalText = btn.textContent;
-                              btn.textContent = '✓ Copied!';
-                              btn.classList.add('text-green-400');
-                              setTimeout(() => {
-                                btn.textContent = originalText;
-                                btn.classList.remove('text-green-400');
-                              }, 2000);
-                            }}
-                            className="text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-gray-800 font-medium"
-                          >
-                            Copy
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={(e) => {
+                                navigator.clipboard.writeText(message.aiResponse.code);
+                                // Better feedback
+                                const btn = e.target;
+                                const originalText = btn.textContent;
+                                btn.textContent = '✓ Copied!';
+                                btn.classList.add('text-green-400');
+                                setTimeout(() => {
+                                  btn.textContent = originalText;
+                                  btn.classList.remove('text-green-400');
+                                }, 2000);
+                              }}
+                              className="text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-gray-800 font-medium"
+                            >
+                              Copy
+                            </button>
+                            {room?.project && (
+                              <button
+                                onClick={() => {
+                                  setShowCommitModal(message._id);
+                                  setCommitFilePath('');
+                                  setCommitMessage(`Add ${message.aiResponse.language || 'code'} generated by Omega AI`);
+                                  setFileExists(false);
+                                  setCommitError(null);
+                                  setCommitSuccess(false);
+                                }}
+                                className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded hover:bg-gray-800 font-medium flex items-center gap-1"
+                                title="Add to Repository"
+                              >
+                                <GitBranch size={12} />
+                                Add to Repo
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <pre className="text-sm text-gray-100 font-mono leading-relaxed">
                           <code className="whitespace-pre font-mono block" style={{ fontWeight: 400, fontFamily: "'Courier New', Courier, monospace" }}>{message.aiResponse.code}</code>
@@ -1696,7 +2165,7 @@ export default function ChatRoom() {
                     {message.edited && (
                       <span className="mr-2">(edited)</span>
                     )}
-                    {new Date(message.createdAt).toLocaleTimeString()}
+                    {formatRelativeTime(message.createdAt)}
                   </div>
                   
                   {/* Read receipts */}
@@ -2077,6 +2546,585 @@ export default function ChatRoom() {
           </div>
         </div>
       </div>
+
+      {/* Share Group Code Modal */}
+      {showShareCodeModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowShareCodeModal(false);
+            }
+          }}
+        >
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">Share Chatroom</h3>
+                <p className="text-sm text-gray-500 mt-1">Share this code or link to invite others</p>
+              </div>
+              <button
+                onClick={() => setShowShareCodeModal(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              {/* Group Code */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Group Code
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={roomGroupCode || ''}
+                    readOnly
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 font-mono text-lg font-bold text-center"
+                  />
+                  <button
+                    onClick={copyGroupCode}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                    title="Copy code"
+                  >
+                    {codeCopied ? (
+                      <>
+                        <Check size={16} />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={16} />
+                        Copy
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Invite Link */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Invite Link
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={roomInviteLink || ''}
+                    readOnly
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-sm"
+                  />
+                  <button
+                    onClick={copyInviteLink}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
+                    title="Copy link"
+                  >
+                    {linkCopied ? (
+                      <>
+                        <Check size={16} />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy size={16} />
+                        Copy
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <p className="text-sm text-blue-800">
+                  <strong>How to use:</strong> Share the group code or invite link with others. They can use it to join this chatroom.
+                </p>
+              </div>
+            </div>
+            
+            <div className="mt-6">
+              <button
+                onClick={() => setShowShareCodeModal(false)}
+                className="w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Join via Code Modal */}
+      {showJoinCodeModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowJoinCodeModal(false);
+              setJoinCode('');
+            }
+          }}
+        >
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">Join via Code</h3>
+                <p className="text-sm text-gray-500 mt-1">Enter a group code to join a chatroom</p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowJoinCodeModal(false);
+                  setJoinCode('');
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                disabled={joiningByCode}
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Group Code
+                </label>
+                <input
+                  type="text"
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                  placeholder="Enter 6-character code..."
+                  maxLength={6}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && joinCode.trim() && !joiningByCode) {
+                      handleJoinByCode();
+                    }
+                  }}
+                  autoFocus
+                  disabled={joiningByCode}
+                />
+                <p className="text-xs text-gray-500 mt-1">Enter the 6-character group code shared by the chatroom</p>
+              </div>
+            </div>
+            
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowJoinCodeModal(false);
+                  setJoinCode('');
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                disabled={joiningByCode}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleJoinByCode}
+                disabled={joiningByCode || !joinCode.trim()}
+                className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {joiningByCode ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Joining...
+                  </>
+                ) : (
+                  'Join Chatroom'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Member Modal */}
+      {showAddMemberModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowAddMemberModal(false);
+              setMemberUsername('');
+              setMemberEmail('');
+              setAddMemberBy('username');
+            }
+          }}
+        >
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">Add Member to Chatroom</h3>
+                {roomId && (
+                  <p className="text-xs text-gray-500 mt-1">Room ID: {roomId}</p>
+                )}
+              </div>
+              <button
+                onClick={() => {
+                  setShowAddMemberModal(false);
+                  setMemberUsername('');
+                  setMemberEmail('');
+                  setAddMemberBy('username');
+                }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                disabled={addingMember}
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="mb-4">
+              <div className="flex gap-2 mb-3">
+                <button
+                  onClick={() => {
+                    setAddMemberBy('username');
+                    setMemberEmail('');
+                  }}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    addMemberBy === 'username'
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  By Username
+                </button>
+                <button
+                  onClick={() => {
+                    setAddMemberBy('email');
+                    setMemberUsername('');
+                  }}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    addMemberBy === 'email'
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  By Email
+                </button>
+              </div>
+              
+              {addMemberBy === 'username' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Username
+                  </label>
+                  <input
+                    type="text"
+                    value={memberUsername}
+                    onChange={(e) => setMemberUsername(e.target.value)}
+                    placeholder="Enter username..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && memberUsername.trim()) {
+                        handleAddMemberToChatroom();
+                      }
+                    }}
+                    autoFocus
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Email
+                  </label>
+                  <input
+                    type="email"
+                    value={memberEmail}
+                    onChange={(e) => setMemberEmail(e.target.value)}
+                    placeholder="Enter email..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && memberEmail.trim()) {
+                        handleAddMemberToChatroom();
+                      }
+                    }}
+                    autoFocus
+                  />
+                </div>
+              )}
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowAddMemberModal(false);
+                  setMemberUsername('');
+                  setMemberEmail('');
+                  setAddMemberBy('username');
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                disabled={addingMember}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddMemberToChatroom}
+                disabled={addingMember || (addMemberBy === 'username' ? !memberUsername.trim() : !memberEmail.trim())}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {addingMember ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Adding...
+                  </>
+                ) : (
+                  'Add Member'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Commit to Repository Modal */}
+      {showCommitModal && (() => {
+        const message = messages.find(m => m._id === showCommitModal);
+        if (!message || !message.aiResponse) return null;
+        
+        const handleCheckFile = async () => {
+          if (!commitFilePath.trim()) {
+            setCommitError('Please enter a file path');
+            return;
+          }
+          
+          setCheckingFile(true);
+          setCommitError(null);
+          try {
+            const response = await axios.get(`/api/chat/room/${roomId}/check-file`, {
+              headers: { Authorization: `Bearer ${token}` },
+              params: { filePath: commitFilePath.trim() }
+            });
+            
+            setFileExists(response.data.exists);
+            if (response.data.exists) {
+              setCommitError('⚠️ This file already exists. Committing will overwrite it.');
+            } else {
+              setCommitError(null);
+            }
+          } catch (error) {
+            console.error('Error checking file:', error);
+            if (error.response?.status === 404) {
+              setFileExists(false);
+              setCommitError(null);
+            } else {
+              setCommitError(error.response?.data?.error || 'Failed to check file existence');
+            }
+          } finally {
+            setCheckingFile(false);
+          }
+        };
+        
+        const handleCommit = async () => {
+          if (!commitFilePath.trim()) {
+            setCommitError('Please enter a file path');
+            return;
+          }
+          
+          if (!commitMessage.trim()) {
+            setCommitError('Please enter a commit message');
+            return;
+          }
+          
+          // Show confirmation if file exists
+          if (fileExists) {
+            const confirmed = window.confirm(
+              `⚠️ Warning: The file "${commitFilePath}" already exists. This will overwrite it. Continue?`
+            );
+            if (!confirmed) return;
+          }
+          
+          setCommitting(true);
+          setCommitError(null);
+          setCommitSuccess(false);
+          
+          try {
+            const content = message.aiResponse.code || message.aiResponse.explanation || message.content;
+            
+            const response = await axios.post(`/api/chat/room/${roomId}/commit-file`, {
+              filePath: commitFilePath.trim(),
+              content: content,
+              commitMessage: commitMessage.trim()
+            }, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            
+            if (response.data.success) {
+              setCommitSuccess(true);
+              setTimeout(() => {
+                setShowCommitModal(null);
+                setCommitFilePath('');
+                setCommitMessage('');
+                setFileExists(false);
+                setCommitError(null);
+                setCommitSuccess(false);
+              }, 2000);
+            }
+          } catch (error) {
+            console.error('Error committing file:', error);
+            setCommitError(error.response?.data?.error || 'Failed to commit file to repository');
+          } finally {
+            setCommitting(false);
+          }
+        };
+        
+        return (
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !committing) {
+                setShowCommitModal(null);
+                setCommitFilePath('');
+                setCommitMessage('');
+                setFileExists(false);
+                setCommitError(null);
+                setCommitSuccess(false);
+              }
+            }}
+          >
+            <div className="bg-gradient-to-br from-white to-purple-50 rounded-2xl p-6 w-full max-w-lg shadow-2xl border-2 border-purple-200">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">
+                    Add to Repository
+                  </h3>
+                  <p className="text-sm text-gray-600 mt-1">Commit AI-generated content to GitHub</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowCommitModal(null);
+                    setCommitFilePath('');
+                    setCommitMessage('');
+                    setFileExists(false);
+                    setCommitError(null);
+                    setCommitSuccess(false);
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                  disabled={committing}
+                >
+                  <X size={24} />
+                </button>
+              </div>
+              
+              {commitSuccess ? (
+                <div className="text-center py-8">
+                  <CheckCircle2 size={48} className="text-green-500 mx-auto mb-4" />
+                  <h4 className="text-lg font-semibold text-gray-900 mb-2">File Committed Successfully!</h4>
+                  <p className="text-sm text-gray-600">The file has been added to the repository.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-4">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      File Path <span className="text-red-500">*</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={commitFilePath}
+                        onChange={(e) => {
+                          setCommitFilePath(e.target.value);
+                          setFileExists(false);
+                          setCommitError(null);
+                        }}
+                        placeholder="e.g., src/components/Button.jsx or README.md"
+                        className="flex-1 px-4 py-2 border-2 border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white"
+                        disabled={committing}
+                      />
+                      <button
+                        onClick={handleCheckFile}
+                        disabled={committing || checkingFile || !commitFilePath.trim()}
+                        className="px-4 py-2 bg-purple-100 text-purple-700 rounded-xl hover:bg-purple-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                      >
+                        {checkingFile ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          'Check'
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Enter the path where the file should be created (e.g., src/utils/helper.js)
+                    </p>
+                  </div>
+                  
+                  {fileExists && (
+                    <div className="mb-4 p-3 bg-yellow-50 border-2 border-yellow-200 rounded-xl">
+                      <div className="flex items-center gap-2 text-yellow-800">
+                        <AlertCircle size={16} />
+                        <span className="text-sm font-medium">File already exists</span>
+                      </div>
+                      <p className="text-xs text-yellow-700 mt-1">
+                        This will overwrite the existing file. Make sure this is what you want.
+                      </p>
+                    </div>
+                  )}
+                  
+                  <div className="mb-4">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Commit Message <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={commitMessage}
+                      onChange={(e) => setCommitMessage(e.target.value)}
+                      placeholder="e.g., Add new component generated by Omega AI"
+                      className="w-full px-4 py-2 border-2 border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white"
+                      disabled={committing}
+                    />
+                  </div>
+                  
+                  {commitError && (
+                    <div className={`mb-4 p-3 rounded-xl ${
+                      commitError.includes('⚠️') 
+                        ? 'bg-yellow-50 border-2 border-yellow-200 text-yellow-800'
+                        : 'bg-red-50 border-2 border-red-200 text-red-800'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <AlertCircle size={16} />
+                        <span className="text-sm font-medium">{commitError}</span>
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => {
+                        setShowCommitModal(null);
+                        setCommitFilePath('');
+                        setCommitMessage('');
+                        setFileExists(false);
+                        setCommitError(null);
+                        setCommitSuccess(false);
+                      }}
+                      className="flex-1 px-4 py-2 border-2 border-gray-300 text-gray-700 rounded-xl hover:bg-gray-50 transition-colors font-medium"
+                      disabled={committing}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleCommit}
+                      disabled={committing || !commitFilePath.trim() || !commitMessage.trim()}
+                      className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed font-medium flex items-center justify-center gap-2"
+                    >
+                      {committing ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" />
+                          Committing...
+                        </>
+                      ) : (
+                        <>
+                          <GitBranch size={16} />
+                          Commit to Repo
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

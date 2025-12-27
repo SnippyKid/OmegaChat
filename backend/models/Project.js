@@ -32,7 +32,11 @@ const projectSchema = new mongoose.Schema({
   chatRoom: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ChatRoom'
-  },
+  }, // Keep for backward compatibility - will be the default/main chatroom
+  chatRooms: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ChatRoom'
+  }], // Array to support multiple chatrooms per project
   settings: {
     public: {
       type: Boolean,
