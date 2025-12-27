@@ -133,3 +133,4 @@ VITE_SOCKET_URL=https://your-backend.onrender.com
 
 5. **GitHub OAuth**: Must update callback URL in GitHub OAuth app settings to match production backend URL.
 
+

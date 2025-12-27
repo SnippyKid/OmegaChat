@@ -31,14 +31,31 @@ export default function Login() {
       }
       setError(errorMsg);
     }
+    
+    // Check if API URL is configured on mount
+    const apiUrl = import.meta.env.VITE_API_URL;
+    if (!apiUrl && !errorParam) {
+      setError('Backend API URL is not configured. Please set VITE_API_URL environment variable in Vercel settings.');
+      console.error('VITE_API_URL is not set in environment variables.');
+    }
   }, [searchParams]);
 
   const handleGitHubLogin = () => {
     setError(null);
-    // Get API URL from environment or use relative path
-    const apiUrl = import.meta.env.VITE_API_URL || '';
-    // Redirect immediately - no health check, no waiting
-    window.location.href = `${apiUrl}/api/auth/github`;
+    // Get API URL from environment
+    const apiUrl = import.meta.env.VITE_API_URL;
+    
+    // Check if API URL is configured
+    if (!apiUrl) {
+      setError('Backend API URL is not configured. Please set VITE_API_URL environment variable in Vercel.');
+      console.error('VITE_API_URL is not set. Cannot redirect to GitHub OAuth.');
+      return;
+    }
+    
+    // Ensure API URL doesn't end with a slash to avoid double slashes
+    const cleanApiUrl = apiUrl.replace(/\/$/, '');
+    // Redirect to GitHub OAuth
+    window.location.href = `${cleanApiUrl}/api/auth/github`;
   };
 
   return (

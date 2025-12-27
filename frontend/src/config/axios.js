@@ -25,5 +25,16 @@ apiClient.interceptors.request.use(
   }
 );
 
+// Response interceptor to handle errors gracefully
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // Don't log or handle errors here - let components handle them
+    // This prevents redirect loops from error handling
+    return Promise.reject(error);
+  }
+);
+
 export default apiClient;
+
 

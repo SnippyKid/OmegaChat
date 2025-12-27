@@ -19,10 +19,22 @@ export function AuthProvider({ children }) {
   }, []);
 
   const fetchUser = async (authToken) => {
+    // Check if API URL is configured
+    const apiUrl = import.meta.env.VITE_API_URL;
+    if (!apiUrl) {
+      console.warn('VITE_API_URL is not set. Cannot fetch user.');
+      // Clear token if API URL is not configured
+      localStorage.removeItem('token');
+      setTokenState(null);
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+    
     try {
       const response = await apiClient.get('/api/auth/me', {
         headers: { Authorization: `Bearer ${authToken}` },
-        timeout: 2000 // 2 second timeout - fail fast
+        timeout: 5000 // 5 second timeout
       });
       
       if (response.data && response.data.user) {
@@ -32,10 +44,16 @@ export function AuthProvider({ children }) {
         throw new Error('Invalid user data received');
       }
     } catch (error) {
-      // Clear invalid token on any error
-      localStorage.removeItem('token');
-      setTokenState(null);
-      setUser(null);
+      // Only clear token on 401 (unauthorized) errors, not network errors
+      if (error.response?.status === 401) {
+        localStorage.removeItem('token');
+        setTokenState(null);
+        setUser(null);
+      } else {
+        // For other errors (network, timeout, etc.), keep token but don't set user
+        console.warn('Failed to fetch user:', error.message);
+        setUser(null);
+      }
     } finally {
       // Always stop loading - no retries, no waiting
       setLoading(false);
