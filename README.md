@@ -397,6 +397,17 @@ This error usually means the callback URL doesn't match. Check:
 - Check browser console for CORS errors
 - Ensure `FRONTEND_URL` in `.env` matches your frontend URL
 
+## 🚀 Deployment & Hosting
+
+For complete step-by-step instructions to host this application for FREE, see [DEPLOYMENT.md](./DEPLOYMENT.md)
+
+### Quick Deployment Options:
+- **Frontend**: Vercel (Free) - Best for React/Vite apps
+- **Backend**: Render (Free) - Supports Node.js + Socket.io
+- **Database**: MongoDB Atlas (Free tier - 512MB)
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed instructions.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

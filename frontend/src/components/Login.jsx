@@ -35,8 +35,10 @@ export default function Login() {
 
   const handleGitHubLogin = () => {
     setError(null);
+    // Get API URL from environment or use relative path
+    const apiUrl = import.meta.env.VITE_API_URL || '';
     // Redirect immediately - no health check, no waiting
-    window.location.href = '/api/auth/github';
+    window.location.href = `${apiUrl}/api/auth/github`;
   };
 
   return (

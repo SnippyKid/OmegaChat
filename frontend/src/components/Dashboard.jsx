@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import apiClient from '../config/axios';
 import { MessageSquare, Plus, LogOut, Github, Mail, Users, Linkedin, MessageCircle, X, Copy, Key, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, Trash2, Edit2, MoreVertical, LogOut as LeaveIcon, Eye } from 'lucide-react';
 
 export default function Dashboard() {
@@ -68,7 +68,7 @@ export default function Dashboard() {
     
     setLoadingGithubStats(true);
     try {
-      const response = await axios.get('/api/auth/github-stats', {
+      const response = await apiClient.get('/api/auth/github-stats', {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -92,7 +92,7 @@ export default function Dashboard() {
 
   const fetchPersonalRooms = async () => {
     try {
-      const response = await axios.get('/api/chat/my-chatrooms', {
+      const response = await apiClient.get('/api/chat/my-chatrooms', {
         headers: { Authorization: `Bearer ${token}` }
       });
       setPersonalRooms(response.data.personalRooms || []);
@@ -105,7 +105,7 @@ export default function Dashboard() {
   const fetchRepositories = async () => {
     setFetchingRepos(true);
     try {
-      const response = await axios.get('/api/auth/repositories', {
+      const response = await apiClient.get('/api/auth/repositories', {
         headers: { Authorization: `Bearer ${token}` }
       });
       setRepositories(response.data.repositories || []);
@@ -119,7 +119,7 @@ export default function Dashboard() {
 
   const fetchProjects = async () => {
     try {
-      const response = await axios.get('/api/projects/my-projects', {
+      const response = await apiClient.get('/api/projects/my-projects', {
         headers: { Authorization: `Bearer ${token}` }
       });
       setProjects(response.data.projects || []);
@@ -157,7 +157,7 @@ export default function Dashboard() {
     
     setCreatingProject(true);
     try {
-      const response = await axios.post('/api/projects/create', 
+      const response = await apiClient.post('/api/projects/create', 
         { repoFullName },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -189,7 +189,7 @@ export default function Dashboard() {
       return;
     }
     try {
-      const response = await axios.post(`/api/projects/${selectedProject._id}/invite/email`, 
+      const response = await apiClient.post(`/api/projects/${selectedProject._id}/invite/email`, 
         { email: inviteEmail },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -291,7 +291,7 @@ export default function Dashboard() {
     }
     
     try {
-      const response = await axios.post(`/api/projects/${projectId}/chatrooms/create`, 
+      const response = await apiClient.post(`/api/projects/${projectId}/chatrooms/create`, 
         { name: roomName.trim() },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -345,7 +345,7 @@ export default function Dashboard() {
       console.log('Sending request to:', `/api/chat/${roomId}/members/add`);
       console.log('Payload:', payload);
       
-      const response = await axios.post(`/api/chat/${roomId}/members/add`, 
+      const response = await apiClient.post(`/api/chat/${roomId}/members/add`, 
         payload,
         { 
           headers: { Authorization: `Bearer ${token}` },
@@ -403,7 +403,7 @@ export default function Dashboard() {
     
     setDeletingRoom(roomId);
     try {
-      await axios.delete(`/api/chat/room/${roomId}`, {
+      await apiClient.delete(`/api/chat/room/${roomId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       showNotification('Chatroom deleted successfully', 'success');
@@ -424,7 +424,7 @@ export default function Dashboard() {
     
     setLeavingRoom(roomId);
     try {
-      await axios.post(`/api/chat/room/${roomId}/leave`, {}, {
+      await apiClient.post(`/api/chat/room/${roomId}/leave`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       showNotification('Left chatroom successfully', 'success');
@@ -446,7 +446,7 @@ export default function Dashboard() {
     }
     
     try {
-      await axios.patch(`/api/chat/room/${roomId}`, 
+      await apiClient.patch(`/api/chat/room/${roomId}`, 
         { name: editRoomName.trim() },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -469,7 +469,7 @@ export default function Dashboard() {
     
     setDeletingProject(projectId);
     try {
-      await axios.delete(`/api/projects/${projectId}`, {
+      await apiClient.delete(`/api/projects/${projectId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       showNotification('Project deleted successfully', 'success');
@@ -490,7 +490,7 @@ export default function Dashboard() {
     
     setLeavingProject(projectId);
     try {
-      await axios.post(`/api/projects/${projectId}/leave`, {}, {
+      await apiClient.post(`/api/projects/${projectId}/leave`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       showNotification('Left project successfully', 'success');
@@ -512,7 +512,7 @@ export default function Dashboard() {
     
     setCreatingPersonalRoom(true);
     try {
-      const response = await axios.post('/api/chat/personal/create', 
+      const response = await apiClient.post('/api/chat/personal/create', 
         { name: personalRoomName.trim() },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -543,7 +543,7 @@ export default function Dashboard() {
   const fetchProjectGroupCode = async () => {
     if (!selectedProject?._id) return;
     try {
-      const response = await axios.get(`/api/projects/${selectedProject._id}/group-code`, {
+      const response = await apiClient.get(`/api/projects/${selectedProject._id}/group-code`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setProjectGroupCode(response.data.groupCode);
@@ -570,7 +570,7 @@ export default function Dashboard() {
     try {
       // Try joining as project first
       try {
-        const response = await axios.post(`/api/projects/join-code/${normalizedCode}`, {},
+        const response = await apiClient.post(`/api/projects/join-code/${normalizedCode}`, {},
           { headers: { Authorization: `Bearer ${token}` } }
         );
         
@@ -601,7 +601,7 @@ export default function Dashboard() {
         // If project join fails (404 or other error), try chatroom join
         if (projectError.response?.status === 404) {
           // Project not found, try chatroom
-          const response = await axios.post(`/api/chat/join-code/${normalizedCode}`, {},
+          const response = await apiClient.post(`/api/chat/join-code/${normalizedCode}`, {},
             { headers: { Authorization: `Bearer ${token}` } }
           );
           
@@ -1235,7 +1235,7 @@ export default function Dashboard() {
                                   e.stopPropagation();
                                   try {
                                     // Get or generate group code for the chatroom
-                                    const response = await axios.get(`/api/chat/room/${room._id}/group-code`, {
+                                    const response = await apiClient.get(`/api/chat/room/${room._id}/group-code`, {
                                       headers: { Authorization: `Bearer ${token}` }
                                     });
                                     const groupCode = response.data.groupCode;

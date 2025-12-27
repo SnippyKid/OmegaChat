@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import axios from 'axios';
+import apiClient from '../config/axios';
 import { Send, Mic, ArrowLeft, Users, Bot, Trash2, Edit2, X, Reply, Pin, Copy, Smile, Search, Image as ImageIcon, Paperclip, Check, CheckCheck, GitBranch, AlertCircle, Loader2, CheckCircle2, UserPlus } from 'lucide-react';
 
 export default function ChatRoom() {
@@ -108,7 +108,7 @@ export default function ChatRoom() {
     
     try {
       const limit = 50;
-      const response = await axios.get(`/api/chat/room/${roomId}/messages`, {
+      const response = await apiClient.get(`/api/chat/room/${roomId}/messages`, {
         headers: { Authorization: `Bearer ${token}` },
         params: { limit, skip }
       });
@@ -511,7 +511,7 @@ export default function ChatRoom() {
     try {
       setLoading(true);
       setError(null);
-      const response = await axios.get(`/api/chat/room/${roomId}`, {
+      const response = await apiClient.get(`/api/chat/room/${roomId}`, {
         headers: { Authorization: `Bearer ${token}` },
         timeout: 10000
       });
@@ -637,7 +637,7 @@ export default function ChatRoom() {
       if (searchFilters.dateFrom) params.dateFrom = searchFilters.dateFrom;
       if (searchFilters.dateTo) params.dateTo = searchFilters.dateTo;
       
-      const response = await axios.get(`/api/chat/room/${roomId}/search`, {
+      const response = await apiClient.get(`/api/chat/room/${roomId}/search`, {
         headers: { Authorization: `Bearer ${token}` },
         params
       });
@@ -686,7 +686,7 @@ export default function ChatRoom() {
     formData.append('content', caption.trim()); // Send caption as content
     
     try {
-      const response = await axios.post(`/api/chat/room/${roomId}/upload`,
+      const response = await apiClient.post(`/api/chat/room/${roomId}/upload`,
         formData,
         {
           headers: {
@@ -747,7 +747,7 @@ export default function ChatRoom() {
     
     setLoadingGroupCode(true);
     try {
-      const response = await axios.get(`/api/chat/room/${roomId}/group-code`, {
+      const response = await apiClient.get(`/api/chat/room/${roomId}/group-code`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -792,7 +792,7 @@ export default function ChatRoom() {
     setJoiningByCode(true);
     try {
       const normalizedCode = joinCode.trim().toUpperCase();
-      const response = await axios.post(`/api/chat/join-code/${normalizedCode}`, {}, {
+      const response = await apiClient.post(`/api/chat/join-code/${normalizedCode}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -842,7 +842,7 @@ export default function ChatRoom() {
         ? { username: memberUsername.trim() }
         : { email: memberEmail.trim() };
       
-      const response = await axios.post(`/api/chat/${roomId}/members/add`, 
+      const response = await apiClient.post(`/api/chat/${roomId}/members/add`, 
         payload,
         { 
           headers: { Authorization: `Bearer ${token}` },
@@ -1272,7 +1272,7 @@ export default function ChatRoom() {
     }
     
     try {
-      await axios.delete(`/api/chat/room/${roomId}/messages`, {
+      await apiClient.delete(`/api/chat/room/${roomId}/messages`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -2890,7 +2890,7 @@ export default function ChatRoom() {
           setCheckingFile(true);
           setCommitError(null);
           try {
-            const response = await axios.get(`/api/chat/room/${roomId}/check-file`, {
+            const response = await apiClient.get(`/api/chat/room/${roomId}/check-file`, {
               headers: { Authorization: `Bearer ${token}` },
               params: { filePath: commitFilePath.trim() }
             });
@@ -2940,7 +2940,7 @@ export default function ChatRoom() {
           try {
             const content = message.aiResponse.code || message.aiResponse.explanation || message.content;
             
-            const response = await axios.post(`/api/chat/room/${roomId}/commit-file`, {
+            const response = await apiClient.post(`/api/chat/room/${roomId}/commit-file`, {
               filePath: commitFilePath.trim(),
               content: content,
               commitMessage: commitMessage.trim()

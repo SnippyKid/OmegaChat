@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useParams, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import apiClient from './config/axios';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import ChatRoom from './components/ChatRoom';
@@ -71,7 +71,7 @@ function JoinProject() {
     
     if (user && token) {
       // User is logged in, get project and redirect to chat
-      axios.get(`/api/projects/${projectId}`, {
+      apiClient.get(`/api/projects/${projectId}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       .then(response => {
@@ -139,7 +139,7 @@ function JoinViaCode() {
       const normalizedCode = groupCode.trim().toUpperCase();
       
       // Try joining as project first
-      axios.post(`/api/projects/join-code/${normalizedCode}`, {}, {
+      apiClient.post(`/api/projects/join-code/${normalizedCode}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       })
       .then(response => {
@@ -157,7 +157,7 @@ function JoinViaCode() {
       })
       .catch(projectError => {
         // If project join fails, try chatroom join
-        axios.post(`/api/chat/join-code/${normalizedCode}`, {}, {
+        apiClient.post(`/api/chat/join-code/${normalizedCode}`, {}, {
           headers: { Authorization: `Bearer ${token}` }
         })
         .then(response => {

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import axios from 'axios';
+import apiClient from '../config/axios';
 
 const AuthContext = createContext();
 
@@ -20,7 +20,7 @@ export function AuthProvider({ children }) {
 
   const fetchUser = async (authToken) => {
     try {
-      const response = await axios.get('/api/auth/me', {
+      const response = await apiClient.get('/api/auth/me', {
         headers: { Authorization: `Bearer ${authToken}` },
         timeout: 2000 // 2 second timeout - fail fast
       });
