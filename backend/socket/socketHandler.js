@@ -320,6 +320,19 @@ export function setupSocketIO(io) {
       try {
         const { roomId, prompt, context } = data;
         
+        // Validate input
+        if (!roomId) {
+          console.error('❌ AI generation: Missing roomId');
+          return socket.emit('error', { message: 'Room ID is required' });
+        }
+        
+        if (!prompt || !prompt.trim()) {
+          console.error('❌ AI generation: Missing or empty prompt');
+          return socket.emit('error', { message: 'Prompt is required' });
+        }
+        
+        console.log(`🤖 AI generation request received: roomId=${roomId}, prompt="${prompt.substring(0, 50)}..."`);
+        
         // Emit typing indicator IMMEDIATELY before any async operations
         // This ensures users see "Omega is thinking" right away
         io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
@@ -342,7 +355,13 @@ export function setupSocketIO(io) {
         }
         
         // Generate AI response - optimized with timeout
-        console.log(`🤖 Generating AI code for: ${prompt.substring(0, 50)}...`);
+        const cleanPrompt = prompt?.trim() || '';
+        if (!cleanPrompt) {
+          console.error('❌ AI generation: Empty prompt after trimming');
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+          return socket.emit('error', { message: 'Prompt cannot be empty' });
+        }
+        console.log(`🤖 Generating AI code for: ${cleanPrompt.substring(0, 50)}...`);
         
         // Get repository context if available (with timeout to prevent delays)
         let repoContext = '';
@@ -450,10 +469,12 @@ Key File Contents:`;
         let aiResponse;
         try {
           console.log('🚀 Starting AI generation...');
+          console.log('📝 Prompt:', cleanPrompt);
+          console.log('📝 Context length:', fullContext?.length || 0);
           const startTime = Date.now();
           
           // Add timeout wrapper for AI generation (25 seconds max)
-          const aiGenerationPromise = generateCodeSnippet(prompt, fullContext);
+          const aiGenerationPromise = generateCodeSnippet(cleanPrompt, fullContext || '');
           const timeoutPromise = new Promise((_, reject) => 
             setTimeout(() => reject(new Error('AI generation timeout after 25 seconds')), 25000)
           );
@@ -462,10 +483,17 @@ Key File Contents:`;
           const generationTime = Date.now() - startTime;
           console.log(`✅ AI code generated successfully in ${generationTime}ms`);
           console.log('📊 Response summary:', {
-            codeLength: aiResponse.code?.length || 0,
-            language: aiResponse.language,
-            explanationLength: aiResponse.explanation?.length || 0
+            codeLength: aiResponse?.code?.length || 0,
+            language: aiResponse?.language || 'none',
+            explanationLength: aiResponse?.explanation?.length || 0,
+            hasCode: !!aiResponse?.code,
+            hasExplanation: !!aiResponse?.explanation
           });
+          
+          // Validate AI response
+          if (!aiResponse) {
+            throw new Error('AI returned empty response');
+          }
         } catch (error) {
           console.error('❌ AI generation failed:', error);
           console.error('Error stack:', error.stack);
@@ -473,7 +501,7 @@ Key File Contents:`;
           // Send error message to user
           const errorMessage = {
             user: socket.userId,
-            content: `@omega: ${prompt}`,
+            content: `@omega: ${cleanPrompt || 'request'}`,
             type: 'text',
             error: `AI generation failed: ${error.message || 'Unknown error'}`
           };
@@ -517,9 +545,9 @@ Key File Contents:`;
         // Save the AI response message
         const aiMessage = {
           user: socket.userId, // Will be overridden to Omega AI
-          content: `@omega ${prompt}`,
+          content: `@omega ${cleanPrompt}`,
           type: 'ai_code',
-          aiPrompt: prompt,
+          aiPrompt: cleanPrompt,
           aiResponse: {
             code: aiResponse.code,
             explanation: aiResponse.explanation,
