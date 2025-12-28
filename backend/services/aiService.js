@@ -58,114 +58,36 @@ export async function generateCodeSnippet(prompt, context = '') {
     // Initialize GoogleGenerativeAI with the API key
     const genAI = new GoogleGenerativeAI(apiKey.trim());
 
+    // Pick the fastest available model without doing multiple probe calls.
+    // Order: explicit env override -> cached working -> default flash -> pro fallbacks.
+    const now = Date.now();
+    const modelCandidates = [
+      process.env.GEMINI_MODEL?.trim(),
+      (cachedWorkingModel && (now - modelCacheTime) < MODEL_CACHE_DURATION) ? cachedWorkingModel : null,
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      'gemini-pro'
+    ].filter(Boolean);
+
+    const uniqueCandidates = [...new Set(modelCandidates)];
+
     let model = null;
     let successfulModel = null;
-    
-    // Check if we have a cached working model (within cache duration)
-    const now = Date.now();
-    if (cachedWorkingModel && (now - modelCacheTime) < MODEL_CACHE_DURATION) {
-      // Use cached model - much faster!
-      model = genAI.getGenerativeModel({ model: cachedWorkingModel });
-      successfulModel = cachedWorkingModel;
-    } else {
-      // Need to find a working model
-      // Prefer faster models first (flash is fastest)
-      const preferredModels = [
-        'gemini-1.5-flash',  // Fastest, best for most tasks
-        'gemini-1.5-pro',   // More capable but slower
-        'gemini-pro'         // Fallback
-      ];
-      
-      let lastError = null;
-      
-      // Try models in order of preference - use Promise.race for faster selection
-      const modelTests = preferredModels.map(async (modelName) => {
-        try {
-          const testModel = genAI.getGenerativeModel({ model: modelName });
-          // Quick test with minimal prompt - add timeout (2 seconds max per model)
-          const testPromise = testModel.generateContent('Hi');
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Model test timeout')), 2000)
-          );
-          
-          const testResult = await Promise.race([testPromise, timeoutPromise]);
-          const testResponse = testResult.response.text();
-          
-          return { model: testModel, modelName, success: true };
-        } catch (e) {
-          return { model: null, modelName, success: false, error: e };
-        }
-      });
-      
-      // Wait for first successful model (or all to fail)
-      const results = await Promise.allSettled(modelTests);
-      for (const result of results) {
-        if (result.status === 'fulfilled' && result.value.success) {
-          model = result.value.model;
-          successfulModel = result.value.modelName;
-          cachedWorkingModel = result.value.modelName;
-          modelCacheTime = now;
-          break;
-        } else if (result.status === 'fulfilled' && !result.value.success) {
-          lastError = result.value.error;
-        }
+
+    for (const candidate of uniqueCandidates) {
+      try {
+        model = genAI.getGenerativeModel({ model: candidate });
+        successfulModel = candidate;
+        cachedWorkingModel = candidate;
+        modelCacheTime = now;
+        break;
+      } catch (e) {
+        console.log(`⚠️ Failed to init model ${candidate}:`, e.message);
       }
-      
-      if (!model) {
-        // If preferred models fail, try listing from API (slower) - but skip if we already tried
-        // This is a fallback, so we'll try it but with timeout
-        try {
-          const availableModels = await Promise.race([
-            listAvailableModels(apiKey.trim()),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Model list timeout')), 3000))
-          ]);
-          
-          if (availableModels.length > 0) {
-            // Try first available model only (fastest)
-            const modelName = availableModels[0];
-            try {
-              const testModel = genAI.getGenerativeModel({ model: modelName });
-              const testPromise = testModel.generateContent('Hi');
-              const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Model test timeout')), 2000)
-              );
-              const testResult = await Promise.race([testPromise, timeoutPromise]);
-              testResult.response.text();
-              
-              model = testModel;
-              successfulModel = modelName;
-              cachedWorkingModel = modelName;
-              modelCacheTime = now;
-            } catch (e) {
-              lastError = e;
-              console.log(`⚠️ Model ${modelName} from API list failed:`, e.message?.substring(0, 100));
-            }
-          }
-        } catch (listError) {
-          console.log('⚠️ Could not list models from API:', listError.message);
-          // Continue with error handling below
-        }
-        
-        if (!model) {
-          const errorMsg = `Failed to find a working Gemini model.
+    }
 
-Tried models: ${preferredModels.join(', ')}
-
-Possible solutions:
-1. Your API key may not have access to Gemini models
-2. The API key might be restricted or blocked
-3. Generative Language API may not be fully enabled yet
-
-Please:
-- Visit https://aistudio.google.com/apikey
-- Verify your API key is active
-- Wait a few minutes after enabling the API
-- Try creating a new API key
-
-Last error: ${lastError?.message || 'Unknown error'}`;
-          throw new Error(errorMsg);
-        }
-      }
+    if (!model) {
+      throw new Error('No valid Gemini model could be initialized. Check GEMINI_MODEL or try gemini-1.5-flash.');
     }
 
     const systemInstruction = `You are Omega, an AI code assistant. 

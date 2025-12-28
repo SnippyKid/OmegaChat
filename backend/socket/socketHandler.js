@@ -6,6 +6,24 @@ import { generateCodeSnippet } from '../services/aiService.js';
 import { getRepositoryContext } from '../services/githubService.js';
 import { getRepositoryStats, formatRepositoryStats, formatActivityNotification } from '../services/dkBotService.js';
 
+// Simple in-memory cache for repository context to reduce GitHub API calls and speed up AI replies
+const REPO_CONTEXT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const repoContextCache = new Map(); // key: `${repoFullName}:${userId}` -> { context, fetchedAt }
+
+const getCachedRepoContext = (repoFullName, userId) => {
+  const key = `${repoFullName}:${userId}`;
+  const cached = repoContextCache.get(key);
+  if (cached && (Date.now() - cached.fetchedAt) < REPO_CONTEXT_TTL_MS) {
+    return cached.context;
+  }
+  return null;
+};
+
+const setCachedRepoContext = (repoFullName, userId, context) => {
+  const key = `${repoFullName}:${userId}`;
+  repoContextCache.set(key, { context, fetchedAt: Date.now() });
+};
+
 export function setupSocketIO(io) {
   // Authentication middleware for Socket.io
   io.use(async (socket, next) => {
@@ -188,7 +206,6 @@ export function setupSocketIO(io) {
         }
         
         // Populate user and reactions manually
-        const User = (await import('../models/User.js')).default;
         const messageObj = savedMessage.toObject();
         
         // Populate message user
@@ -378,17 +395,103 @@ export function setupSocketIO(io) {
                   console.log('📂 Fetching repository context from project...');
                   console.log(`   - Repository: ${project.githubRepo.fullName}`);
                   console.log(`   - Token present: ${user.githubToken.substring(0, 10)}...`);
+
+                  // Use cached context when available to speed up AI responses
+                  const cached = getCachedRepoContext(project.githubRepo.fullName, socket.userId);
+                  if (cached) {
+                    repoContext = cached;
+                    repoAccessInfo.contextFetched = true;
+                    console.log('✅ Repository context loaded from cache');
+                  } else {
+                    // Increase timeout for slower GitHub responses
+                    const contextPromise = getRepositoryContext(
+                      project.githubRepo.fullName,
+                      user.githubToken
+                    );
+                    const timeoutPromise = new Promise((_, reject) => 
+                      setTimeout(() => reject(new Error('Context fetch timeout after 12 seconds')), 12000)
+                    );
+                    
+                    const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
                   
-                  // Increase timeout to 5 seconds for better reliability
-                  const contextPromise = getRepositoryContext(
-                    project.githubRepo.fullName,
-                    user.githubToken
-                  );
-                  const timeoutPromise = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Context fetch timeout after 5 seconds')), 5000)
-                  );
-                  
-                  const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
+                    // Format repository context for AI (limit size to avoid token limits)
+                    const fileContents = repoInfo.files
+                      .map(f => {
+                        // Limit each file to 1500 chars to stay within token limits
+                        const content = f.content.length > 1500 
+                          ? f.content.substring(0, 1500) + '... (truncated)'
+                          : f.content;
+                        return `\n--- ${f.path} ---\n${content}`;
+                      })
+                      .join('\n\n');
+                    
+                    // Limit total context size (approximately 8000 chars max)
+                    const maxContextLength = 8000;
+                    const contextHeader = `Repository Context:
+- Repository: ${repoInfo.name}
+- Description: ${repoInfo.description || 'N/A'}
+- Primary Language: ${repoInfo.language || 'N/A'}
+- Branch: ${repoInfo.branch}
+- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
+
+Key File Contents:`;
+
+                    const fullContext = contextHeader + fileContents;
+                    repoContext = fullContext.length > maxContextLength
+                      ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
+                      : fullContext;
+                    repoAccessInfo.contextFetched = true;
+                    setCachedRepoContext(project.githubRepo.fullName, socket.userId, repoContext);
+                    console.log('✅ Repository context fetched successfully!');
+                    console.log(`   - Files included: ${repoInfo.files.length}`);
+                    console.log(`   - Context length: ${repoContext.length} chars`);
+                  }
+                } else {
+                  if (!user) {
+                    repoAccessInfo.error = 'User not found';
+                    console.warn('⚠️ User not found for repository access');
+                  } else if (!user.githubToken) {
+                    repoAccessInfo.error = 'GitHub token not found. Please connect your GitHub account.';
+                    console.warn('⚠️ User does not have GitHub token. Repository context will not be available.');
+                  }
+                }
+              }
+            } else {
+              repoAccessInfo.error = 'Project not found';
+              console.warn('⚠️ Project not found');
+            }
+          } else if (room.repository) {
+            // Direct repository chatroom
+            console.log('📦 Room has direct repository link, checking...');
+            console.log('   - Repository:', room.repository);
+            repoAccessInfo.repoFullName = room.repository;
+            
+            const user = await User.findById(socket.userId).select('githubToken');
+            console.log('   - User found:', !!user);
+            console.log('   - User has githubToken:', !!(user && user.githubToken));
+            repoAccessInfo.hasGithubToken = !!(user && user.githubToken);
+            
+            if (user && user.githubToken) {
+              console.log('📂 Fetching repository context from room repository...');
+              console.log(`   - Repository: ${room.repository}`);
+              console.log(`   - Token present: ${user.githubToken.substring(0, 10)}...`);
+
+              const cached = getCachedRepoContext(room.repository, socket.userId);
+              if (cached) {
+                repoContext = cached;
+                repoAccessInfo.contextFetched = true;
+                console.log('✅ Repository context loaded from cache');
+              } else {
+                // Increase timeout to handle slower GitHub responses
+                const contextPromise = getRepositoryContext(
+                  room.repository,
+                  user.githubToken
+                );
+                const timeoutPromise = new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('Context fetch timeout after 12 seconds')), 12000)
+                );
+                
+                const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
                 
                 // Format repository context for AI (limit size to avoid token limits)
                 const fileContents = repoInfo.files
@@ -417,80 +520,11 @@ Key File Contents:`;
                   ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
                   : fullContext;
                 repoAccessInfo.contextFetched = true;
+                setCachedRepoContext(room.repository, socket.userId, repoContext);
                 console.log('✅ Repository context fetched successfully!');
                 console.log(`   - Files included: ${repoInfo.files.length}`);
                 console.log(`   - Context length: ${repoContext.length} chars`);
-              } else {
-                if (!user) {
-                  repoAccessInfo.error = 'User not found';
-                  console.warn('⚠️ User not found for repository access');
-                } else if (!user.githubToken) {
-                  repoAccessInfo.error = 'GitHub token not found. Please connect your GitHub account.';
-                  console.warn('⚠️ User does not have GitHub token. Repository context will not be available.');
-                }
               }
-            }
-            } else {
-              repoAccessInfo.error = 'Project not found';
-              console.warn('⚠️ Project not found');
-            }
-          } else if (room.repository) {
-            // Direct repository chatroom
-            console.log('📦 Room has direct repository link, checking...');
-            console.log('   - Repository:', room.repository);
-            repoAccessInfo.repoFullName = room.repository;
-            
-            const user = await User.findById(socket.userId).select('githubToken');
-            console.log('   - User found:', !!user);
-            console.log('   - User has githubToken:', !!(user && user.githubToken));
-            repoAccessInfo.hasGithubToken = !!(user && user.githubToken);
-            
-            if (user && user.githubToken) {
-              console.log('📂 Fetching repository context from room repository...');
-              console.log(`   - Repository: ${room.repository}`);
-              console.log(`   - Token present: ${user.githubToken.substring(0, 10)}...`);
-              
-              // Increase timeout to 5 seconds for better reliability
-              const contextPromise = getRepositoryContext(
-                room.repository,
-                user.githubToken
-              );
-              const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Context fetch timeout after 5 seconds')), 5000)
-              );
-              
-              const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
-              
-              // Format repository context for AI (limit size to avoid token limits)
-              const fileContents = repoInfo.files
-                .map(f => {
-                  // Limit each file to 1500 chars to stay within token limits
-                  const content = f.content.length > 1500 
-                    ? f.content.substring(0, 1500) + '... (truncated)'
-                    : f.content;
-                  return `\n--- ${f.path} ---\n${content}`;
-                })
-                .join('\n\n');
-              
-              // Limit total context size (approximately 8000 chars max)
-              const maxContextLength = 8000;
-              const contextHeader = `Repository Context:
-- Repository: ${repoInfo.name}
-- Description: ${repoInfo.description || 'N/A'}
-- Primary Language: ${repoInfo.language || 'N/A'}
-- Branch: ${repoInfo.branch}
-- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
-
-Key File Contents:`;
-
-              const fullContext = contextHeader + fileContents;
-              repoContext = fullContext.length > maxContextLength
-                ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
-                : fullContext;
-              repoAccessInfo.contextFetched = true;
-              console.log('✅ Repository context fetched successfully!');
-              console.log(`   - Files included: ${repoInfo.files.length}`);
-              console.log(`   - Context length: ${repoContext.length} chars`);
             } else {
               if (!user) {
                 repoAccessInfo.error = 'User not found';
@@ -604,7 +638,6 @@ Key File Contents:`;
           }
           
           // Populate user manually
-          const User = (await import('../models/User.js')).default;
           const messageObj = savedError.toObject();
           if (messageObj.user) {
             const user = await User.findById(messageObj.user).select('username avatar').lean();
@@ -658,7 +691,6 @@ Key File Contents:`;
         
         // Get only the last message - more efficient than loading all messages
         // The message was just added, so it's the last one in the array
-        const User = (await import('../models/User.js')).default;
         const lastMessage = room.messages[room.messages.length - 1];
         
         // Properly convert subdocument to plain object with all nested properties
@@ -781,7 +813,6 @@ Key File Contents:`;
             room.lastMessage = new Date();
             await room.save();
             
-            const User = (await import('../models/User.js')).default;
             const savedError = room.messages[room.messages.length - 1];
             const messageObj = savedError.toObject();
             if (messageObj.user) {
@@ -837,7 +868,6 @@ Key File Contents:`;
         }
         
         // Populate user manually
-        const User = (await import('../models/User.js')).default;
         const messageObj = savedMessage.toObject();
         if (messageObj.user) {
           const user = await User.findById(messageObj.user).select('username avatar').lean();
@@ -1122,7 +1152,6 @@ Key File Contents:`;
           return socket.emit('error', { message: 'Message not found after reaction update' });
         }
         
-        const User = (await import('../models/User.js')).default;
         const messageObj = updatedMessage.toObject();
         
         // Populate user

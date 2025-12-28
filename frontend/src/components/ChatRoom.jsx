@@ -119,6 +119,14 @@ export default function ChatRoom() {
     }
   }, []);
 
+  // Ensure we honor pending scroll requests as soon as messages render (e.g., after refresh)
+  useEffect(() => {
+    if (shouldScrollToBottomRef.current) {
+      scrollToBottom(true);
+      shouldScrollToBottomRef.current = false;
+    }
+  }, [messages.length, scrollToBottom]);
+
   const fetchMessages = useCallback(async (skip = 0, append = false, shouldScroll = false) => {
     if (!roomId || !token) return;
     
