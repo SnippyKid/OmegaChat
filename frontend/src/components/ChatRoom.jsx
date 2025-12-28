@@ -271,9 +271,7 @@ export default function ChatRoom() {
       logger.debug('✅ Successfully joined room:', data.roomId);
     });
 
-    newSocket.on('error', (error) => {
-      logger.error('❌ Socket error:', error);
-    });
+    // Removed duplicate error handler - using the one below with better error handling
 
     // Listen for new members being added
     newSocket.on('member_added', (data) => {
@@ -531,24 +529,39 @@ export default function ChatRoom() {
     });
 
     newSocket.on('error', (error) => {
-      logger.error('❌ Socket error:', error);
+      // Extract error message properly - handle both object and string errors
+      let errorMsg = 'Unknown socket error';
+      let errorDetails = null;
+      
+      if (typeof error === 'string') {
+        errorMsg = error;
+      } else if (error && typeof error === 'object') {
+        errorMsg = error.message || error.msg || error.error || JSON.stringify(error);
+        errorDetails = error.details || error.stack;
+      } else if (error) {
+        errorMsg = String(error);
+      }
+      
+      logger.error('❌ Socket error:', errorMsg, errorDetails ? { details: errorDetails } : '');
+      
       // Turn off typing indicator on error
       setIsTyping(false);
       if (aiTypingTimeoutRef.current) {
         clearTimeout(aiTypingTimeoutRef.current);
         aiTypingTimeoutRef.current = null;
       }
-      const errorMsg = error?.message || error?.toString() || 'Unknown socket error';
-      alert(`Socket Error: ${errorMsg}`);
       
-      // Add error message to chat for visibility
-      setMessages(prev => [...prev, {
-        _id: `error-${Date.now()}`,
-        user: { _id: 'system', username: 'System', avatar: null },
-        content: `❌ Error: ${errorMsg}`,
-        type: 'system',
-        createdAt: new Date().toISOString()
-      }]);
+      // Only show alert for critical errors, not all errors
+      if (errorMsg && !errorMsg.includes('Authentication') && !errorMsg.includes('token')) {
+        // Add error message to chat for visibility instead of alert
+        setMessages(prev => [...prev, {
+          _id: `error-${Date.now()}`,
+          user: { _id: 'system', username: 'System', avatar: null },
+          content: `❌ Socket Error: ${errorMsg}${errorDetails ? `\n\nDetails: ${errorDetails}` : ''}`,
+          type: 'system',
+          createdAt: new Date().toISOString()
+        }]);
+      }
     });
     
     newSocket.on('connect_error', (error) => {

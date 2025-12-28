@@ -105,7 +105,33 @@ export async function getRepositoryContext(repoFullName, githubToken, maxFiles =
 
     // Fetch content for key files
     const fileContents = [];
-    for (const file of relevantFiles.slice(0, 10)) { // Fetch first 10 files
+    
+    // Prioritize README.md - always include it if it exists
+    const readmeFile = tree.tree.find(item => 
+      item.type === 'blob' && 
+      item.path.toLowerCase() === 'readme.md'
+    );
+    
+    if (readmeFile) {
+      try {
+        const content = await getFileContent(repoFullName, readmeFile.path, githubToken, tree.branch);
+        fileContents.push({
+          path: readmeFile.path,
+          content: content.content.substring(0, 5000), // Allow more content for README
+          size: content.size
+        });
+        console.log('✅ README.md included in repository context');
+      } catch (error) {
+        console.log(`⚠️ Could not fetch README.md:`, error.message);
+      }
+    }
+    
+    // Fetch other relevant files (excluding README.md if already added)
+    const filesToFetch = relevantFiles.filter(f => 
+      f.path.toLowerCase() !== 'readme.md'
+    ).slice(0, 9); // Fetch 9 more files (total 10 including README)
+    
+    for (const file of filesToFetch) {
       try {
         const content = await getFileContent(repoFullName, file.path, githubToken, tree.branch);
         fileContents.push({

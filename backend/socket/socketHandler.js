@@ -26,7 +26,8 @@ export function setupSocketIO(io) {
       socket.user = user;
       next();
     } catch (error) {
-      next(new Error('Authentication error: Invalid token'));
+      console.error('❌ Socket authentication error:', error.message || error);
+      next(new Error(`Authentication error: ${error.message || 'Invalid token'}`));
     }
   });
 
@@ -57,7 +58,10 @@ export function setupSocketIO(io) {
       }
     } catch (connectionError) {
       console.error('Error in socket connection handler:', connectionError);
-      socket.emit('error', { message: 'Connection error occurred' });
+      socket.emit('error', { 
+        message: 'Connection error occurred',
+        error: connectionError.message || 'Connection error occurred'
+      });
     }
     
     // Handle joining a room
@@ -615,10 +619,12 @@ Key File Contents:`;
           // Emit stop typing indicator on error
           io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           
-          // Also emit error to sender
+          // Also emit error to sender with proper error object
+          const errorMessage = error.message || 'Unknown error occurred';
           socket.emit('error', { 
-            message: `AI generation failed: ${error.message}`,
-            details: error.stack 
+            message: `AI generation failed: ${errorMessage}`,
+            error: errorMessage,
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
           });
           
           return;
@@ -756,6 +762,7 @@ Key File Contents:`;
         console.error('📤 Sending error to client:', errorMsg);
         socket.emit('error', { 
           message: errorMsg,
+          error: errorMsg,
           details: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
         
