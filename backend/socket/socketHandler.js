@@ -210,7 +210,8 @@ export function setupSocketIO(io) {
           return socket.emit('error', { message: 'Message is too long (max 10,000 characters)' });
         }
         
-        const room = await ChatRoom.findById(roomId);
+        // Use select to only fetch what we need for membership check
+        const room = await ChatRoom.findById(roomId).select('members messages');
         if (!room) {
           return socket.emit('error', { message: 'Room not found' });
         }
@@ -237,13 +238,20 @@ export function setupSocketIO(io) {
         room.lastMessage = new Date();
         await room.save();
         
-        // Reload room to get the saved message with _id and timestamps
+        // Get the last message directly - more efficient than loading all messages
         const updatedRoom = await ChatRoom.findById(roomId)
-          .populate('messages.user', 'username avatar')
-          .populate('messages.reactions.users', 'username avatar')
-          .populate('messages.starredBy', 'username avatar');
+          .select('messages')
+          .populate({
+            path: 'messages',
+            options: { sort: { createdAt: -1 }, limit: 1 },
+            populate: [
+              { path: 'user', select: 'username avatar' },
+              { path: 'reactions.users', select: 'username avatar' },
+              { path: 'starredBy', select: 'username avatar' }
+            ]
+          });
         
-        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        const savedMessage = updatedRoom.messages[0]; // First one is the newest
         
         // Ensure arrays are initialized
         if (!savedMessage.reactions) savedMessage.reactions = [];
@@ -295,9 +303,10 @@ export function setupSocketIO(io) {
         // Emit typing indicator to all users (including sender)
         io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
         
+        // Generate AI response - optimized with timeout
         console.log(`🤖 Generating AI code for: ${prompt.substring(0, 50)}...`);
         
-        // Get repository context if available
+        // Get repository context if available (with timeout to prevent delays)
         let repoContext = '';
         try {
           if (room.project) {
@@ -306,10 +315,16 @@ export function setupSocketIO(io) {
               const user = await User.findById(socket.userId);
               if (user && user.githubToken) {
                 console.log('📂 Fetching repository context...');
-                const repoInfo = await getRepositoryContext(
+                // Add timeout to prevent long delays (3 seconds max)
+                const contextPromise = getRepositoryContext(
                   project.githubRepo.fullName,
                   user.githubToken
                 );
+                const timeoutPromise = new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('Context fetch timeout')), 3000)
+                );
+                
+                const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
                 
                 // Format repository context for AI (limit size to avoid token limits)
                 const fileContents = repoInfo.files
@@ -345,10 +360,16 @@ Key File Contents:`;
             const user = await User.findById(socket.userId);
             if (user && user.githubToken) {
               console.log('📂 Fetching repository context from room repository...');
-              const repoInfo = await getRepositoryContext(
+              // Add timeout to prevent long delays (3 seconds max)
+              const contextPromise = getRepositoryContext(
                 room.repository,
                 user.githubToken
               );
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Context fetch timeout')), 3000)
+              );
+              
+              const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
               
               // Format repository context for AI (limit size to avoid token limits)
               const fileContents = repoInfo.files
@@ -453,11 +474,18 @@ Key File Contents:`;
         room.lastMessage = new Date();
         await room.save();
         
-        // Reload room to get the saved message with _id and timestamps
-        const updatedRoom = await ChatRoom.findById(roomId)
-          .populate('messages.user', 'username avatar');
+        // Get only the last message - more efficient than loading all messages
+        // The message was just added, so it's the last one in the array
+        const User = (await import('../models/User.js')).default;
+        const lastMessage = room.messages[room.messages.length - 1];
+        const savedMessage = lastMessage.toObject ? lastMessage.toObject() : { ...lastMessage };
         
-        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        // Populate user manually for better performance
+        if (savedMessage.user && savedMessage.user.toString) {
+          const userId = savedMessage.user.toString();
+          const user = await User.findById(userId).select('username avatar').lean();
+          savedMessage.user = user || { _id: userId, username: 'User', avatar: null };
+        }
         
         // Override user info for AI messages to show as Omega AI
         if (savedMessage.type === 'ai_code') {

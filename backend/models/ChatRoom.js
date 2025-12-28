@@ -109,19 +109,23 @@ const chatRoomSchema = new mongoose.Schema({
   },
   project: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Project'
+    ref: 'Project',
+    index: true // Index for faster project lookups
   },
   repository: {
     type: String, // GitHub repo full name (owner/repo) for repository-only chatrooms
+    index: true // Index for faster repository lookups
   },
   members: [{
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    ref: 'User',
+    index: true // Index for faster member lookups
   }],
   messages: [messageSchema],
   lastMessage: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true // Index for sorting by last message
   },
   pinnedMessages: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -140,10 +144,15 @@ const chatRoomSchema = new mongoose.Schema({
   groupCode: {
     type: String,
     unique: true,
-    sparse: true
+    sparse: true,
+    index: true // Index for faster code lookups
   }
 }, {
   timestamps: true
 });
+
+// Compound indexes for common queries
+chatRoomSchema.index({ project: 1, lastMessage: -1 }); // For project chatrooms sorted by activity
+chatRoomSchema.index({ members: 1, lastMessage: -1 }); // For user's chatrooms sorted by activity
 
 export default mongoose.model('ChatRoom', chatRoomSchema);

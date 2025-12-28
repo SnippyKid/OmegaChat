@@ -661,19 +661,19 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100">
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100">
         <div className="text-center">
-          <Loader2 className="h-12 w-12 animate-spin text-purple-600 mx-auto mb-4" />
-          <p className="text-purple-700 font-medium">Loading dashboard...</p>
+          <Loader2 className="h-12 w-12 animate-spin text-green-600 mx-auto mb-4" />
+          <p className="text-green-700 font-medium">Loading dashboard...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100">
       {/* Header */}
-      <header className="bg-gradient-to-r from-purple-600 to-lavender-600 shadow-lg border-b border-purple-700">
+      <header className="bg-gradient-to-r from-green-600 to-emerald-600 shadow-lg border-b border-green-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -704,14 +704,14 @@ export default function Dashboard() {
               </button>
               <button
                 onClick={() => setShowPersonalRoomModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
+                className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
               >
                 <MessageSquare size={20} />
                 Personal Chat
               </button>
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-lavender-500 hover:bg-lavender-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-all shadow-md hover:shadow-lg font-medium"
               >
                 <Plus size={20} />
                 New Project
@@ -754,8 +754,8 @@ export default function Dashboard() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* GitHub Stats Section */}
         {githubStats && (
-          <div className="mb-8 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-xl border border-purple-200 overflow-hidden">
-            <div className="bg-gradient-to-r from-purple-600 to-lavender-600 px-6 py-4">
+          <div className="mb-8 bg-gradient-to-br from-white to-green-50 rounded-2xl shadow-xl border border-green-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <Github size={24} className="text-white" />
@@ -777,11 +777,11 @@ export default function Dashboard() {
                 <img
                   src={githubStats.avatar}
                   alt={githubStats.username}
-                  className="w-20 h-20 rounded-full border-4 border-purple-200 shadow-lg"
+                  className="w-20 h-20 rounded-full border-4 border-green-200 shadow-lg"
                 />
                 <div className="flex-1">
                   <h3 className="text-2xl font-bold text-gray-900">{githubStats.name}</h3>
-                  <p className="text-purple-600 font-medium">@{githubStats.username}</p>
+                  <p className="text-green-600 font-medium">@{githubStats.username}</p>
                   {githubStats.bio && (
                     <p className="text-gray-600 mt-2">{githubStats.bio}</p>
                   )}
@@ -802,21 +802,21 @@ export default function Dashboard() {
               
               {/* Stats Grid */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
-                  <div className="text-2xl font-bold text-purple-700">{githubStats.followers}</div>
-                  <div className="text-sm text-purple-600 font-medium">Followers</div>
+                <div className="bg-gradient-to-br from-green-100 to-emerald-100 rounded-xl p-4 border border-green-200">
+                  <div className="text-2xl font-bold text-green-700">{githubStats.followers}</div>
+                  <div className="text-sm text-green-600 font-medium">Followers</div>
                 </div>
-                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
-                  <div className="text-2xl font-bold text-purple-700">{githubStats.following}</div>
-                  <div className="text-sm text-purple-600 font-medium">Following</div>
+                <div className="bg-gradient-to-br from-green-100 to-emerald-100 rounded-xl p-4 border border-green-200">
+                  <div className="text-2xl font-bold text-green-700">{githubStats.following}</div>
+                  <div className="text-sm text-green-600 font-medium">Following</div>
                 </div>
-                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
-                  <div className="text-2xl font-bold text-purple-700">{githubStats.publicRepos}</div>
-                  <div className="text-sm text-purple-600 font-medium">Public Repos</div>
+                <div className="bg-gradient-to-br from-green-100 to-emerald-100 rounded-xl p-4 border border-green-200">
+                  <div className="text-2xl font-bold text-green-700">{githubStats.publicRepos}</div>
+                  <div className="text-sm text-green-600 font-medium">Public Repos</div>
                 </div>
-                <div className="bg-gradient-to-br from-purple-100 to-lavender-100 rounded-xl p-4 border border-purple-200">
-                  <div className="text-2xl font-bold text-purple-700">{githubStats.totalStars}</div>
-                  <div className="text-sm text-purple-600 font-medium">Total Stars</div>
+                <div className="bg-gradient-to-br from-green-100 to-emerald-100 rounded-xl p-4 border border-green-200">
+                  <div className="text-2xl font-bold text-green-700">{githubStats.totalStars}</div>
+                  <div className="text-sm text-green-600 font-medium">Total Stars</div>
                 </div>
               </div>
               
@@ -828,7 +828,7 @@ export default function Dashboard() {
                     {githubStats.topLanguages.map((lang, idx) => (
                       <div
                         key={idx}
-                        className="px-3 py-1.5 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-lg text-sm font-medium shadow-sm"
+                        className="px-3 py-1.5 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg text-sm font-medium shadow-sm"
                       >
                         {lang.language} ({lang.count})
                       </div>
@@ -843,13 +843,13 @@ export default function Dashboard() {
         {/* Search Bar */}
         <div className="mb-6">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-purple-400" size={20} />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-green-400" size={20} />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search projects and chatrooms..."
-              className="w-full pl-10 pr-4 py-3 border-2 border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white/80 backdrop-blur-sm shadow-sm"
+              className="w-full pl-10 pr-4 py-3 border-2 border-green-200 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white/80 backdrop-blur-sm shadow-sm"
             />
             {searchQuery && (
               <button
@@ -863,27 +863,27 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center justify-between mb-6 mt-8">
-          <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">
+          <h2 className="text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
             Your Projects
-            {searchQuery && <span className="text-sm font-normal text-purple-500 ml-2">({filteredProjects.length})</span>}
+            {searchQuery && <span className="text-sm font-normal text-green-500 ml-2">({filteredProjects.length})</span>}
           </h2>
         </div>
         
         {filteredProjects.length === 0 && !searchQuery ? (
-          <div className="text-center py-12 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg border-2 border-purple-200">
-            <Github className="mx-auto h-12 w-12 text-purple-400" />
+          <div className="text-center py-12 bg-gradient-to-br from-white to-green-50 rounded-2xl shadow-lg border-2 border-green-200">
+            <Github className="mx-auto h-12 w-12 text-green-400" />
             <h3 className="mt-4 text-lg font-medium text-gray-900">No projects yet</h3>
             <p className="mt-2 text-gray-600">Create a project from your GitHub repository to get started</p>
             <button
               onClick={() => setShowCreateModal(true)}
-              className="mt-4 px-6 py-3 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg font-medium"
+              className="mt-4 px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl hover:from-green-600 hover:to-emerald-600 transition-all shadow-md hover:shadow-lg font-medium"
             >
               Create Project
             </button>
           </div>
         ) : filteredProjects.length === 0 && searchQuery ? (
-          <div className="text-center py-12 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg border-2 border-purple-200">
-            <Search className="mx-auto h-12 w-12 text-purple-400" />
+          <div className="text-center py-12 bg-gradient-to-br from-white to-green-50 rounded-2xl shadow-lg border-2 border-green-200">
+            <Search className="mx-auto h-12 w-12 text-green-400" />
             <h3 className="mt-4 text-lg font-medium text-gray-900">No projects found</h3>
             <p className="mt-2 text-gray-600">Try adjusting your search query</p>
           </div>
@@ -895,7 +895,7 @@ export default function Dashboard() {
               return (
                 <div
                   key={project._id}
-                  className={`bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-purple-200 hover:border-purple-400 relative group ${
+                  className={`bg-gradient-to-br from-white to-green-50 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-green-200 hover:border-green-400 relative group ${
                     (project?.chatRoom?._id || project?.chatRoom) ? 'cursor-pointer' : 'cursor-not-allowed opacity-80'
                   }`}
                 >
@@ -915,16 +915,16 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-500 mt-1">{project.githubRepo?.fullName}</p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Github size={20} className="text-purple-500" />
+                        <Github size={20} className="text-green-500" />
                         <div className="relative">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setShowProjectMenu(showProjectMenu === project._id ? null : project._id);
                             }}
-                            className="p-1.5 hover:bg-purple-100 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-1.5 hover:bg-green-100 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                           >
-                            <MoreVertical size={18} className="text-purple-600" />
+                            <MoreVertical size={18} className="text-green-600" />
                           </button>
                           {showProjectMenu === project._id && (
                             <div className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[160px]">
@@ -978,7 +978,7 @@ export default function Dashboard() {
                     {project.description && (
                       <p className="text-sm text-gray-600 mb-4 line-clamp-2">{project.description}</p>
                     )}
-                    <div className="flex items-center gap-2 text-sm text-purple-600 mb-3 font-medium">
+                    <div className="flex items-center gap-2 text-sm text-green-600 mb-3 font-medium">
                       <MessageSquare size={16} />
                       <span>
                         {project.members && project.members.length > 0 
@@ -986,21 +986,21 @@ export default function Dashboard() {
                           : '0 members'}
                       </span>
                       {isOwner && (
-                        <span className="ml-2 px-2.5 py-1 bg-gradient-to-r from-purple-500 to-lavender-500 text-white text-xs rounded-full font-semibold shadow-sm">Owner</span>
+                        <span className="ml-2 px-2.5 py-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white text-xs rounded-full font-semibold shadow-sm">Owner</span>
                       )}
                     </div>
                     
                     {/* Chatrooms Section */}
-                    <div className="border-t-2 border-purple-200 pt-3 mt-3">
+                    <div className="border-t-2 border-green-200 pt-3 mt-3">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-semibold text-purple-600 uppercase tracking-wide">Chatrooms</span>
+                        <span className="text-xs font-semibold text-green-600 uppercase tracking-wide">Chatrooms</span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             setShowCreateChatroomModal(project._id);
                             setNewChatroomName('');
                           }}
-                          className="text-xs px-2.5 py-1 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-lg hover:from-purple-600 hover:to-lavender-600 transition-all shadow-sm flex items-center gap-1 font-medium"
+                          className="text-xs px-2.5 py-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition-all shadow-sm flex items-center gap-1 font-medium"
                           title="Create new chatroom"
                         >
                           <Plus size={12} />
@@ -1045,7 +1045,7 @@ export default function Dashboard() {
                                   return (
                                     <div
                                       key={roomId.toString()}
-                                      className="flex items-center justify-between p-2.5 bg-gradient-to-r from-purple-50 to-lavender-50 hover:from-purple-100 hover:to-lavender-100 rounded-xl transition-all group border border-purple-200"
+                                      className="flex items-center justify-between p-2.5 bg-gradient-to-r from-green-50 to-emerald-50 hover:from-green-100 hover:to-emerald-100 rounded-xl transition-all group border border-green-200"
                                     >
                                       <div
                                         onClick={(e) => {
@@ -1054,10 +1054,10 @@ export default function Dashboard() {
                                         }}
                                         className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer"
                                       >
-                                        <MessageSquare size={14} className="text-purple-500 flex-shrink-0" />
+                                        <MessageSquare size={14} className="text-green-500 flex-shrink-0" />
                                         <span className="text-sm text-gray-700 truncate font-medium">{roomName}</span>
                                         {defaultChatRoom && (roomId.toString() === (defaultChatRoom._id || defaultChatRoom).toString()) && (
-                                          <span className="text-xs px-2 py-0.5 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-full flex-shrink-0 font-semibold shadow-sm">Main</span>
+                                          <span className="text-xs px-2 py-0.5 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-full flex-shrink-0 font-semibold shadow-sm">Main</span>
                                         )}
                                       </div>
                                       <button
@@ -1072,10 +1072,10 @@ export default function Dashboard() {
                                           setMemberEmail('');
                                           setAddMemberBy('username');
                                         }}
-                                        className="p-1.5 hover:bg-purple-200 rounded-lg transition-all hover:scale-110 active:scale-95"
+                                        className="p-1.5 hover:bg-green-200 rounded-lg transition-all hover:scale-110 active:scale-95"
                                         title="Add member to chatroom"
                                       >
-                                        <Users size={14} className="text-purple-600" />
+                                        <Users size={14} className="text-green-600" />
                                       </button>
                                     </div>
                                   );
@@ -1093,7 +1093,7 @@ export default function Dashboard() {
                                       }
                                       setExpandedProjects(newExpanded);
                                     }}
-                                    className="w-full text-xs text-purple-600 hover:text-purple-700 py-1 text-center font-medium"
+                                    className="w-full text-xs text-green-600 hover:text-green-700 py-1 text-center font-medium"
                                   >
                                     {isExpanded ? 'Show Less' : `+${chatRoomsList.length - 2} more`}
                                   </button>
@@ -1116,13 +1116,13 @@ export default function Dashboard() {
         {/* Personal Chatrooms Section */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
               Personal Chatrooms
-              {searchQuery && <span className="text-sm font-normal text-purple-500 ml-2">({filteredPersonalRooms.length})</span>}
+              {searchQuery && <span className="text-sm font-normal text-green-500 ml-2">({filteredPersonalRooms.length})</span>}
             </h2>
             <button
               onClick={() => setShowPersonalRoomModal(true)}
-              className="flex items-center gap-2 px-4 py-2 text-sm bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg font-medium"
+              className="flex items-center gap-2 px-4 py-2 text-sm bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl hover:from-green-600 hover:to-emerald-600 transition-all shadow-md hover:shadow-lg font-medium"
             >
               <Plus size={16} />
               New Chat
@@ -1130,20 +1130,20 @@ export default function Dashboard() {
           </div>
           
           {filteredPersonalRooms.length === 0 && !searchQuery ? (
-            <div className="text-center py-12 bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100 rounded-2xl shadow-lg border-2 border-purple-200">
-              <MessageSquare className="mx-auto h-12 w-12 text-purple-400" />
+            <div className="text-center py-12 bg-gradient-to-br from-green-50 via-emerald-50 to-green-100 rounded-2xl shadow-lg border-2 border-green-200">
+              <MessageSquare className="mx-auto h-12 w-12 text-green-400" />
               <h3 className="mt-4 text-lg font-medium text-gray-900">No personal chatrooms yet</h3>
               <p className="mt-2 text-gray-600">Create a personal chatroom for general discussions</p>
               <button
                 onClick={() => setShowPersonalRoomModal(true)}
-                className="mt-4 px-6 py-3 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg font-medium"
+                className="mt-4 px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl hover:from-green-600 hover:to-emerald-600 transition-all shadow-md hover:shadow-lg font-medium"
               >
                 Create Personal Chatroom
               </button>
             </div>
           ) : filteredPersonalRooms.length === 0 && searchQuery ? (
-            <div className="text-center py-12 bg-gradient-to-br from-white to-purple-50 rounded-2xl shadow-lg border-2 border-purple-200">
-              <Search className="mx-auto h-12 w-12 text-purple-400" />
+            <div className="text-center py-12 bg-gradient-to-br from-white to-green-50 rounded-2xl shadow-lg border-2 border-green-200">
+              <Search className="mx-auto h-12 w-12 text-green-400" />
               <h3 className="mt-4 text-lg font-medium text-gray-900">No chatrooms found</h3>
               <p className="mt-2 text-gray-600">Try adjusting your search query</p>
             </div>
@@ -1152,7 +1152,7 @@ export default function Dashboard() {
               {filteredPersonalRooms.map((room) => (
                 <div
                   key={room._id}
-                  className="bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-purple-200 hover:border-purple-400 relative group"
+                  className="bg-gradient-to-br from-green-50 via-emerald-50 to-green-100 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-green-200 hover:border-green-400 relative group"
                 >
                   <div
                     onClick={() => openPersonalRoom(room)}
@@ -1174,7 +1174,7 @@ export default function Dashboard() {
                                   setEditRoomName('');
                                 }
                               }}
-                              className="flex-1 px-2 py-1 border border-purple-300 rounded text-sm font-semibold"
+                              className="flex-1 px-2 py-1 border border-green-300 rounded text-sm font-semibold"
                               autoFocus
                               onClick={(e) => e.stopPropagation()}
                             />
@@ -1200,19 +1200,19 @@ export default function Dashboard() {
                         ) : (
                           <h3 className="text-lg font-semibold text-gray-900">{room.name}</h3>
                         )}
-                        <p className="text-sm text-purple-600 mt-1 font-semibold">Personal Chatroom</p>
+                        <p className="text-sm text-green-600 mt-1 font-semibold">Personal Chatroom</p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <MessageSquare size={20} className="text-purple-500 flex-shrink-0" />
+                        <MessageSquare size={20} className="text-green-500 flex-shrink-0" />
                         <div className="relative">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               setShowRoomMenu(showRoomMenu === room._id ? null : room._id);
                             }}
-                            className="p-1.5 hover:bg-purple-200 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-1.5 hover:bg-green-200 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                           >
-                            <MoreVertical size={18} className="text-purple-600" />
+                            <MoreVertical size={18} className="text-green-600" />
                           </button>
                           {showRoomMenu === room._id && (
                             <div className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[160px]">
@@ -1296,7 +1296,7 @@ export default function Dashboard() {
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 text-sm text-purple-700 mb-2 font-medium">
+                    <div className="flex items-center gap-2 text-sm text-green-700 mb-2 font-medium">
                       <Users size={16} />
                       <span>
                         {room.members && room.members.length > 0 
@@ -1320,15 +1320,15 @@ export default function Dashboard() {
       {/* Create Project Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-gradient-to-br from-white to-purple-50 rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto shadow-2xl border-2 border-purple-200">
-            <h3 className="text-2xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">Select a Project You Want to Work On</h3>
+          <div className="bg-gradient-to-br from-white to-green-50 rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto shadow-2xl border-2 border-green-200">
+            <h3 className="text-2xl font-bold mb-2 bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">Select a Project You Want to Work On</h3>
             <p className="text-sm text-gray-600 mb-6">
               Choose a GitHub repository. All contributors will be automatically invited to the chatroom.
             </p>
             
             {fetchingRepos ? (
               <div className="mb-4 flex items-center justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+                <Loader2 className="h-6 w-6 animate-spin text-green-600" />
                 <span className="ml-2 text-gray-600">Loading repositories...</span>
               </div>
             ) : repositories.length > 0 ? (
@@ -1340,8 +1340,8 @@ export default function Dashboard() {
                       setSelectedRepo(repo);
                       setRepoInput(repo.fullName);
                     }}
-                    className={`p-3 border-b border-purple-100 cursor-pointer hover:bg-purple-50 transition-colors ${
-                      selectedRepo?.fullName === repo.fullName ? 'bg-gradient-to-r from-purple-100 to-lavender-100 border-purple-300' : ''
+                    className={`p-3 border-b border-green-100 cursor-pointer hover:bg-green-50 transition-colors ${
+                      selectedRepo?.fullName === repo.fullName ? 'bg-gradient-to-r from-green-100 to-emerald-100 border-green-300' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -1350,7 +1350,7 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-500">{repo.fullName}</p>
                       </div>
                       {selectedRepo?.fullName === repo.fullName && (
-                        <span className="text-purple-600 font-bold">✓</span>
+                        <span className="text-green-600 font-bold">✓</span>
                       )}
                     </div>
                   </div>
@@ -1391,7 +1391,7 @@ export default function Dashboard() {
                 <button
                   type="submit"
                   disabled={!repoInput.trim() || creatingProject}
-                  className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg font-medium"
+                  className="flex-1 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl hover:from-green-600 hover:to-emerald-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg font-medium"
                 >
                   {creatingProject ? 'Creating...' : 'Select Project'}
                 </button>
@@ -1404,11 +1404,11 @@ export default function Dashboard() {
       {/* Invite Members Modal */}
       {showInviteModal && selectedProject && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-gradient-to-br from-white to-purple-50 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl border-2 border-purple-200">
+          <div className="bg-gradient-to-br from-white to-green-50 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl border-2 border-green-200">
             <div className="p-6 pb-4 flex-shrink-0">
-              <h3 className="text-2xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">Add Team Members</h3>
+              <h3 className="text-2xl font-bold mb-2 bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">Add Team Members</h3>
               <p className="text-sm text-gray-600">
-                Invite collaborators to join <span className="font-semibold text-purple-700">{selectedProject.name}</span>
+                Invite collaborators to join <span className="font-semibold text-green-700">{selectedProject.name}</span>
               </p>
             </div>
 
@@ -1418,7 +1418,7 @@ export default function Dashboard() {
               {selectedProject?.members && selectedProject.members.length > 0 && (
                 <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
                   <div className="flex items-center gap-3 mb-3">
-                    <Users className="text-purple-600" size={20} />
+                    <Users className="text-green-600" size={20} />
                     <h4 className="font-semibold text-gray-900">Current Contributors ({selectedProject.members.length})</h4>
                   </div>
                   <div className="space-y-2 max-h-32 overflow-y-auto">
@@ -1470,7 +1470,7 @@ export default function Dashboard() {
               {/* Group Code Invitation */}
               <div className="border border-gray-200 rounded-lg p-4 bg-gradient-to-br from-primary-50 to-blue-50">
                 <div className="flex items-center gap-3 mb-3">
-                  <Key className="text-purple-600" size={20} />
+                  <Key className="text-green-600" size={20} />
                   <h4 className="font-semibold text-gray-900">Group Code</h4>
                 </div>
                 <p className="text-sm text-gray-600 mb-3">
@@ -1478,7 +1478,7 @@ export default function Dashboard() {
                 </p>
                 {projectGroupCode ? (
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 px-4 py-3 bg-white border-2 border-purple-300 rounded-lg text-center font-mono font-semibold text-purple-700">
+                    <div className="flex-1 px-4 py-3 bg-white border-2 border-green-300 rounded-lg text-center font-mono font-semibold text-green-700">
                       <div className="text-2xl font-bold text-primary-700 font-mono tracking-wider">
                         {projectGroupCode}
                       </div>
@@ -1699,14 +1699,14 @@ export default function Dashboard() {
                   value={personalRoomName}
                   onChange={(e) => setPersonalRoomName(e.target.value)}
                   placeholder="e.g., Team Discussion, General Chat"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                   autoFocus
                 />
               </div>
               <div className="flex gap-3">
                 <button
                   type="submit"
-                  className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium"
+                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
                 >
                   {creatingPersonalRoom ? (
                     <>

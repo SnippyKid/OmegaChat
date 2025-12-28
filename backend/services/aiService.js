@@ -1,6 +1,11 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import axios from 'axios';
 
+// Cache for working model to avoid testing on every call
+let cachedWorkingModel = null;
+let modelCacheTime = 0;
+const MODEL_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
 // Function to list available models from the API
 async function listAvailableModels(apiKey) {
   try {
@@ -50,88 +55,119 @@ export async function generateCodeSnippet(prompt, context = '') {
       throw new Error('GEMINI_API_KEY format appears incorrect. Gemini API keys should start with "AIzaSy". Please verify your key at https://aistudio.google.com/apikey');
     }
 
-    console.log('🔑 API Key found, length:', apiKey.length);
-    console.log('🔑 API Key starts with:', apiKey.substring(0, 10) + '...');
-
     // Initialize GoogleGenerativeAI with the API key
     const genAI = new GoogleGenerativeAI(apiKey.trim());
 
-    // First, try to get the list of available models from the API
-    console.log('🔍 Fetching available models from API...');
-    let availableModels = await listAvailableModels(apiKey.trim());
-    
-    // Fallback models if API listing fails
-    const fallbackModels = [
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-pro'
-    ];
-    
-    // Use available models from API, or fallback to our list
-    const modelsToTry = availableModels.length > 0 
-      ? availableModels 
-      : fallbackModels;
-    
-    console.log(`📝 Will try ${modelsToTry.length} models:`, modelsToTry);
-    
     let model = null;
     let successfulModel = null;
-    let lastError = null;
     
-    // Try each model by actually testing it with a simple API call
-    for (const modelName of modelsToTry) {
-      try {
-        const testModel = genAI.getGenerativeModel({ model: modelName });
-        // Actually test the model with a simple call
-        const testResult = await testModel.generateContent('test');
-        const testResponse = testResult.response.text();
-        
-        // If we get here, the model works!
-        model = testModel;
-        successfulModel = modelName;
-        console.log(`✅ Model ${modelName} is working!`);
-        break;
-      } catch (e) {
-        console.log(`⚠️ Model ${modelName} failed: ${e.message?.substring(0, 150)}`);
-        lastError = e;
-        // Continue to next model
+    // Check if we have a cached working model (within cache duration)
+    const now = Date.now();
+    if (cachedWorkingModel && (now - modelCacheTime) < MODEL_CACHE_DURATION) {
+      // Use cached model - much faster!
+      model = genAI.getGenerativeModel({ model: cachedWorkingModel });
+      successfulModel = cachedWorkingModel;
+    } else {
+      // Need to find a working model
+      // Prefer faster models first (flash is fastest)
+      const preferredModels = [
+        'gemini-1.5-flash',  // Fastest, best for most tasks
+        'gemini-1.5-pro',   // More capable but slower
+        'gemini-pro'         // Fallback
+      ];
+      
+      let lastError = null;
+      
+      // Try models in order of preference
+      for (const modelName of preferredModels) {
+        try {
+          const testModel = genAI.getGenerativeModel({ model: modelName });
+          // Quick test with minimal prompt
+          const testResult = await testModel.generateContent('Hi');
+          const testResponse = testResult.response.text();
+          
+          // Model works! Cache it for future use
+          model = testModel;
+          successfulModel = modelName;
+          cachedWorkingModel = modelName;
+          modelCacheTime = now;
+          break;
+        } catch (e) {
+          lastError = e;
+          // Continue to next model
+        }
       }
-    }
-    
-    if (!model) {
-      const errorMsg = `Failed to find a working Gemini model. 
+      
+      if (!model) {
+        // If preferred models fail, try listing from API (slower)
+        const availableModels = await listAvailableModels(apiKey.trim());
+        if (availableModels.length > 0) {
+          for (const modelName of availableModels) {
+            try {
+              const testModel = genAI.getGenerativeModel({ model: modelName });
+              const testResult = await testModel.generateContent('Hi');
+              testResult.response.text();
+              
+              model = testModel;
+              successfulModel = modelName;
+              cachedWorkingModel = modelName;
+              modelCacheTime = now;
+              break;
+            } catch (e) {
+              lastError = e;
+            }
+          }
+        }
+        
+        if (!model) {
+          const errorMsg = `Failed to find a working Gemini model.
 
-Tried models: ${modelsToTry.join(', ')}
+Tried models: ${preferredModels.join(', ')}
 
 Possible solutions:
 1. Your API key may not have access to Gemini models
 2. The API key might be restricted or blocked
-3. Generative Language API may not be fully enabled yet (wait a few minutes)
+3. Generative Language API may not be fully enabled yet
 
 Please:
 - Visit https://aistudio.google.com/apikey
 - Verify your API key is active
-- Wait a few minutes after enabling the API for it to propagate
+- Wait a few minutes after enabling the API
 - Try creating a new API key
 
 Last error: ${lastError?.message || 'Unknown error'}`;
-      throw new Error(errorMsg);
+          throw new Error(errorMsg);
+        }
+      }
     }
-    
-    console.log(`🎯 Using working model: ${successfulModel}`);
 
-    const systemInstruction = `You are Omega, an AI code assistant specialized in generating high-quality code snippets. 
-Provide clean, well-commented code that follows best practices. 
-If the user asks for code in a specific language or framework, use that.
-Always include a brief explanation of what the code does.
-Format your response with code in markdown code blocks.
+    const systemInstruction = `You are Omega, an AI code assistant. Your responses must follow this EXACT format:
 
-When repository context is provided, use it to:
-- Understand the project structure and existing code patterns
-- Match the coding style and conventions used in the repository
-- Reference existing files and functions when relevant
-- Suggest code that integrates well with the existing codebase
-- Follow the project's architecture and patterns`;
+1. **Explanation Section** (First):
+   - Start with a clear, concise explanation of what the user is asking for
+   - Explain the approach or solution strategy
+   - Keep it simple and easy to understand (2-4 sentences max)
+
+2. **Solution Section** (After explanation):
+   - Provide the actual code solution
+   - Use clean, well-commented code following best practices
+   - If multiple solutions exist, provide the best one first
+   - Format code in markdown code blocks with language identifier
+
+**Response Format:**
+[Your explanation here - what the problem is and how we'll solve it]
+
+\`\`\`[language]
+[Your code solution here]
+\`\`\`
+
+**Important Rules:**
+- Always start with explanation, then provide code
+- Keep explanations simple and brief
+- Code should be production-ready and well-commented
+- If user asks for a specific language/framework, use that
+- When repository context is provided, match existing code patterns and style
+- Be concise - avoid unnecessary verbosity`;
 
     const userMessage = context 
       ? `${context}\n\nUser request: ${prompt}`
@@ -139,18 +175,14 @@ When repository context is provided, use it to:
 
     const fullPrompt = `${systemInstruction}\n\n${userMessage}`;
 
-    console.log('🤖 Generating code for prompt:', prompt.substring(0, 50) + '...');
-    console.log('📝 Full prompt length:', fullPrompt.length);
-
     let result;
     let response;
     
     try {
-      // Generate content - pass string directly (simpler format)
+      // Generate content with optimized settings for faster response
+      // Use simpler API call for better performance
       result = await model.generateContent(fullPrompt);
       response = result.response.text();
-      console.log('✅ AI Response received, length:', response.length);
-      console.log('📄 Response preview:', response.substring(0, 200));
     } catch (apiError) {
       console.error('❌ Gemini API call failed:', apiError);
       console.error('API Error details:', {
@@ -206,38 +238,66 @@ Original error: ${apiError.message}`;
       throw new Error(`Gemini API error: ${apiError.message || 'Unknown API error'}`);
     }
     
-    // Extract code blocks and explanation
-    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+    // Parse response to extract explanation and code
+    // Expected format: [Explanation text]\n\n```[language]\n[code]\n```
+    
+    // Extract code blocks
+    const codeBlockRegex = /```(\w+)?\n?([\s\S]*?)```/g;
     const codeBlocks = [];
     let match;
-    let explanation = response;
+    let responseWithoutCode = response;
     
     while ((match = codeBlockRegex.exec(response)) !== null) {
       const language = match[1] || 'javascript';
-      const code = match[2];
+      const code = match[2].trim();
       codeBlocks.push({ language, code });
-      explanation = explanation.replace(match[0], '');
+      // Remove code block from response to get explanation
+      responseWithoutCode = responseWithoutCode.replace(match[0], '').trim();
     }
     
-    // If code blocks were found, use them; otherwise, it's a text-only response
+    // Clean up explanation - remove markdown formatting artifacts
+    let explanation = responseWithoutCode
+      .replace(/^\*\*Explanation:\*\*/i, '')
+      .replace(/^\*\*Solution:\*\*/i, '')
+      .replace(/^Explanation:/i, '')
+      .replace(/^Solution:/i, '')
+      .replace(/^#+\s*/g, '') // Remove markdown headers
+      .trim();
+    
+    // If no explanation found before code, try to extract from beginning of response
+    if (!explanation || explanation.length < 10) {
+      // Look for text before first code block
+      const firstCodeBlockIndex = response.indexOf('```');
+      if (firstCodeBlockIndex > 0) {
+        explanation = response.substring(0, firstCodeBlockIndex)
+          .replace(/^\*\*.*?\*\*\s*/g, '')
+          .replace(/^#+\s*/g, '')
+          .trim();
+      }
+    }
+    
+    // If still no explanation, use a default
+    if (!explanation || explanation.length < 10) {
+      explanation = 'Here\'s the solution:';
+    }
+    
+    // If code blocks were found, use them
     if (codeBlocks.length > 0) {
-      // Has code blocks - return the first one as code, rest as explanation
       const finalCode = codeBlocks[0].code;
       const finalLanguage = codeBlocks[0].language || 'javascript';
-      const finalExplanation = explanation.trim() || 'Code generated successfully';
       
       return {
         code: finalCode,
         language: finalLanguage,
-        explanation: finalExplanation,
+        explanation: explanation,
         allBlocks: codeBlocks
       };
     } else {
       // No code blocks - this is a text-only response
       return {
-        code: null, // No code to display
+        code: null,
         language: null,
-        explanation: response.trim(), // Full response is the explanation/text
+        explanation: response.trim(),
         allBlocks: []
       };
     }

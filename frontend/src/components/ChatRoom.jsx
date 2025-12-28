@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
 import apiClient from '../config/axios';
+import { logger } from '../utils/logger';
 import { Send, Mic, ArrowLeft, Users, Bot, Trash2, Edit2, X, Reply, Pin, Copy, Smile, Search, Image as ImageIcon, Paperclip, Check, CheckCheck, GitBranch, AlertCircle, Loader2, CheckCircle2, UserPlus } from 'lucide-react';
 
 export default function ChatRoom() {
@@ -109,9 +110,12 @@ export default function ChatRoom() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMentions, showEmojiPicker]);
 
-  const scrollToBottom = useCallback(() => {
-    if (shouldScrollToBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = useCallback((force = false) => {
+    if (force || shouldScrollToBottomRef.current) {
+      // Use requestAnimationFrame for smoother scrolling
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      });
     }
   }, []);
 
@@ -120,7 +124,7 @@ export default function ChatRoom() {
     
     // Prevent concurrent fetches
     if (fetchingMessagesRef.current) {
-      console.log('⏸️ Already fetching messages, skipping...');
+      logger.debug('⏸️ Already fetching messages, skipping...');
       return;
     }
     
@@ -158,7 +162,7 @@ export default function ChatRoom() {
       setHasMoreMessages(newMessages.length === limit);
       setMessagePage(Math.floor(skip / limit));
     } catch (error) {
-      console.error('Error fetching messages:', error);
+      logger.error('Error fetching messages:', error);
     } finally {
       fetchingMessagesRef.current = false;
     }
@@ -211,13 +215,13 @@ export default function ChatRoom() {
 
     const joinRoom = () => {
       if (roomId && newSocket.connected) {
-        console.log('Joining room:', roomId);
+        logger.debug('Joining room:', roomId);
         newSocket.emit('join_room', roomId);
       }
     };
 
     newSocket.on('connect', () => {
-      console.log('✅ Socket connected to server, socket ID:', newSocket.id);
+      logger.log('✅ Socket connected to server, socket ID:', newSocket.id);
       joinRoom();
       // Only refresh messages if we don't have any yet (initial connection)
       if (roomId && messages.length === 0) {
@@ -228,13 +232,13 @@ export default function ChatRoom() {
     // Periodically verify we're still in the room (every 30 seconds)
     roomCheckIntervalRef.current = setInterval(() => {
       if (roomId && newSocket.connected) {
-        console.log('🔄 Periodic room check - ensuring we are still in room:', roomId);
+        logger.debug('🔄 Periodic room check - ensuring we are still in room:', roomId);
         joinRoom();
       }
     }, 30000);
 
     newSocket.on('disconnect', (reason) => {
-      console.warn('⚠️ Socket disconnected:', reason);
+      logger.warn('⚠️ Socket disconnected:', reason);
       if (reason === 'io server disconnect') {
         // Server disconnected the socket, reconnect manually
         newSocket.connect();
@@ -242,34 +246,34 @@ export default function ChatRoom() {
     });
 
     newSocket.on('reconnect', (attemptNumber) => {
-      console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
+      logger.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
       joinRoom();
       // Don't refresh messages on reconnect - socket events will handle new messages
     });
 
     newSocket.on('reconnect_attempt', (attemptNumber) => {
-      console.log('🔄 Reconnection attempt', attemptNumber);
+      logger.debug('🔄 Reconnection attempt', attemptNumber);
     });
 
     newSocket.on('reconnect_error', (error) => {
-      console.error('❌ Reconnection error:', error);
+      logger.error('❌ Reconnection error:', error);
     });
 
     newSocket.on('reconnect_failed', () => {
-      console.error('❌ Reconnection failed');
+      logger.error('❌ Reconnection failed');
     });
 
     newSocket.on('room_joined', (data) => {
-      console.log('✅ Successfully joined room:', data.roomId);
+      logger.debug('✅ Successfully joined room:', data.roomId);
     });
 
     newSocket.on('error', (error) => {
-      console.error('❌ Socket error:', error);
+      logger.error('❌ Socket error:', error);
     });
 
     // Listen for new members being added
     newSocket.on('member_added', (data) => {
-      console.log('👤 New member added:', data);
+      logger.debug('👤 New member added:', data);
       if (data.roomId === roomId) {
         // Use debounced fetch to prevent excessive calls
         debouncedFetchRoomForSocket();
@@ -278,7 +282,7 @@ export default function ChatRoom() {
 
     // Listen for users joining the room
     newSocket.on('user_joined', (data) => {
-      console.log('👤 User joined room:', data);
+      logger.debug('👤 User joined room:', data);
       // Use debounced fetch to prevent excessive calls
       if (roomId) {
         debouncedFetchRoomForSocket();
@@ -287,7 +291,7 @@ export default function ChatRoom() {
 
     // Listen for users leaving the room
     newSocket.on('member_left', (data) => {
-      console.log('👤 Member left room:', data);
+      logger.debug('👤 Member left room:', data);
       if (data.roomId === roomId) {
         // Use debounced fetch to prevent excessive calls
         debouncedFetchRoomForSocket();
@@ -296,7 +300,7 @@ export default function ChatRoom() {
 
     // Listen for user_left event (from socket handler)
     newSocket.on('user_left', (data) => {
-      console.log('👤 User left room:', data);
+      logger.debug('👤 User left room:', data);
       if (roomId) {
         // Use debounced fetch to prevent excessive calls
         debouncedFetchRoomForSocket();
@@ -326,11 +330,20 @@ export default function ChatRoom() {
           }
         });
         
-        // Only scroll if user is near bottom (within 200px) and we have new messages
+        // Check if any new message is from current user - always scroll for own messages
+        const hasOwnMessage = messageUpdateQueue.some(data => {
+          const msgUserId = data.message.user?._id || data.message.user;
+          return user && (msgUserId?.toString() === user._id?.toString());
+        });
+        
+        // Only scroll if user is near bottom (within 300px) or it's own message
         if (newMessageIds.size > 0) {
           const container = messagesContainerRef.current;
-          if (container) {
-            const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+          if (hasOwnMessage) {
+            // Always scroll for own messages
+            shouldScrollToBottomRef.current = true;
+          } else if (container) {
+            const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
             shouldScrollToBottomRef.current = isNearBottom;
           } else {
             shouldScrollToBottomRef.current = true;
@@ -345,7 +358,7 @@ export default function ChatRoom() {
         setTimeout(() => {
           scrollToBottom();
           shouldScrollToBottomRef.current = false;
-        }, 100);
+        }, 50); // Reduced delay for faster response
       }
     };
     
@@ -369,7 +382,7 @@ export default function ChatRoom() {
     });
 
     newSocket.on('ai_code_generated', (data) => {
-      console.log('🤖 Received AI code generated event:', data);
+      logger.debug('🤖 Received AI code generated event:', data);
       // Turn off typing indicator when AI response is received
       setIsTyping(false);
       if (aiTypingTimeoutRef.current) {
@@ -381,64 +394,57 @@ export default function ChatRoom() {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
           if (!exists) {
-            // Only scroll if user is near bottom
-            const container = messagesContainerRef.current;
-            if (container) {
-              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
-              shouldScrollToBottomRef.current = isNearBottom;
-            } else {
-              shouldScrollToBottomRef.current = true;
-            }
+            // Always scroll for AI responses (user requested it)
+            shouldScrollToBottomRef.current = true;
             return [...prev, data.message];
           }
           return prev;
         });
-        setTimeout(() => {
-          scrollToBottom();
-          shouldScrollToBottomRef.current = false;
-        }, 100);
+        // Use requestAnimationFrame for smoother scroll
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            scrollToBottom(true);
+            shouldScrollToBottomRef.current = false;
+          }, 50);
+        });
       } else {
-        console.error('❌ AI code generated event missing message:', data);
+        logger.error('❌ AI code generated event missing message:', data);
       }
     });
 
     // DK Bot events
     newSocket.on('dk_bot_response', (data) => {
-      console.log('📊 Received DK bot response:', data);
+      logger.debug('📊 Received DK bot response:', data);
       if (data.message) {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
           if (!exists) {
-            // Only scroll if user is near bottom
-            const container = messagesContainerRef.current;
-            if (container) {
-              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
-              shouldScrollToBottomRef.current = isNearBottom;
-            } else {
-              shouldScrollToBottomRef.current = true;
-            }
+            // Always scroll for bot responses (user requested it)
+            shouldScrollToBottomRef.current = true;
             return [...prev, data.message];
           }
           return prev;
         });
-        setTimeout(() => {
-          scrollToBottom();
-          shouldScrollToBottomRef.current = false;
-        }, 100);
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            scrollToBottom(true);
+            shouldScrollToBottomRef.current = false;
+          }, 50);
+        });
       }
     });
 
     // ChaiWala Bot events
     newSocket.on('chaiwala_welcome', (data) => {
-      console.log('☕ Received ChaiWala welcome:', data);
+      logger.debug('☕ Received ChaiWala welcome:', data);
       if (data.message) {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
           if (!exists) {
-            // Only scroll if user is near bottom
+            // Only scroll for welcome if user is near bottom (not always needed)
             const container = messagesContainerRef.current;
             if (container) {
-              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
               shouldScrollToBottomRef.current = isNearBottom;
             } else {
               shouldScrollToBottomRef.current = true;
@@ -447,10 +453,12 @@ export default function ChatRoom() {
           }
           return prev;
         });
-        setTimeout(() => {
-          scrollToBottom();
-          shouldScrollToBottomRef.current = false;
-        }, 100);
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            scrollToBottom();
+            shouldScrollToBottomRef.current = false;
+          }, 50);
+        });
       }
     });
 
@@ -512,7 +520,7 @@ export default function ChatRoom() {
     });
 
     newSocket.on('ai_typing', () => {
-      console.log('🤖 AI is typing...');
+      logger.debug('🤖 AI is typing...');
       setIsTyping(true);
       // Clear any existing timeout
       if (aiTypingTimeoutRef.current) {
@@ -521,13 +529,13 @@ export default function ChatRoom() {
       // Set a timeout to turn off typing indicator if no response
       aiTypingTimeoutRef.current = setTimeout(() => {
         setIsTyping(false);
-        console.log('⏱️ AI typing timeout - if no response, check backend logs');
+        logger.debug('⏱️ AI typing timeout - if no response, check backend logs');
         aiTypingTimeoutRef.current = null;
       }, 30000); // 30 seconds timeout
     });
 
     newSocket.on('ai_typing_stopped', () => {
-      console.log('🤖 AI stopped typing');
+      logger.debug('🤖 AI stopped typing');
       setIsTyping(false);
       if (aiTypingTimeoutRef.current) {
         clearTimeout(aiTypingTimeoutRef.current);
@@ -536,7 +544,7 @@ export default function ChatRoom() {
     });
 
     newSocket.on('error', (error) => {
-      console.error('Socket error:', error);
+      logger.error('Socket error:', error);
       // Turn off typing indicator on error
       setIsTyping(false);
       if (aiTypingTimeoutRef.current) {
@@ -549,14 +557,14 @@ export default function ChatRoom() {
     });
     
     newSocket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
+      logger.error('Socket connection error:', error);
       alert('Failed to connect to chat server. Please refresh the page.');
     });
 
     // Ensure room is joined whenever roomId changes or socket reconnects
     const handleRoomJoin = () => {
       if (roomId && newSocket.connected) {
-        console.log('🔄 Ensuring room is joined:', roomId);
+        logger.debug('🔄 Ensuring room is joined:', roomId);
         newSocket.emit('join_room', roomId);
       }
     };
@@ -571,7 +579,7 @@ export default function ChatRoom() {
     setSocket(newSocket);
 
     return () => {
-      console.log('🧹 Cleaning up socket connection');
+      logger.debug('🧹 Cleaning up socket connection');
       // Leave room before disconnecting
       if (roomId && newSocket.connected) {
         newSocket.emit('leave_room', roomId);
@@ -638,7 +646,7 @@ export default function ChatRoom() {
 
     // Prevent concurrent fetches unless forced
     if (fetchingRoomRef.current && !force) {
-      console.log('⏸️ Already fetching room, skipping...');
+        logger.debug('⏸️ Already fetching room, skipping...');
       return;
     }
 
@@ -659,7 +667,7 @@ export default function ChatRoom() {
         setError('Room not found');
       }
     } catch (error) {
-      console.error('Error fetching room:', error);
+      logger.error('Error fetching room:', error);
       const errorMessage = error.response?.data?.error || error.message || 'Failed to load chat room';
       setError(errorMessage);
       
@@ -781,7 +789,7 @@ export default function ChatRoom() {
         setEditingMessage(null);
       }
     } catch (error) {
-      console.error('Error editing message:', error);
+      logger.error('Error editing message:', error);
       alert('Failed to edit message');
     }
   };
@@ -795,7 +803,7 @@ export default function ChatRoom() {
         socket.emit('delete_message', { roomId, messageId });
       }
     } catch (error) {
-      console.error('Error deleting message:', error);
+      logger.error('Error deleting message:', error);
       alert('Failed to delete message');
     }
   };
@@ -852,7 +860,7 @@ export default function ChatRoom() {
         });
       }
     } catch (error) {
-      console.error('Error searching:', error);
+      logger.error('Error searching:', error);
     }
   };
 
@@ -903,7 +911,7 @@ export default function ChatRoom() {
         scrollToBottom();
       }
     } catch (error) {
-      console.error('Error uploading file:', error);
+      logger.error('Error uploading file:', error);
       alert('Failed to upload file: ' + (error.response?.data?.error || error.message));
     } finally {
       setUploadingFile(false);
@@ -960,7 +968,7 @@ export default function ChatRoom() {
         throw new Error(response.data?.error || 'Failed to get group code');
       }
     } catch (error) {
-      console.error('Error getting group code:', error);
+      logger.error('Error getting group code:', error);
       const errorMessage = error.response?.data?.error || error.message || 'Failed to get group code';
       alert(errorMessage);
     } finally {
@@ -1014,7 +1022,7 @@ export default function ChatRoom() {
         throw new Error(response.data?.error || 'Failed to join chatroom');
       }
     } catch (error) {
-      console.error('Error joining by code:', error);
+      logger.error('Error joining by code:', error);
       const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to join chatroom';
       alert(errorMessage);
     } finally {
@@ -1061,7 +1069,7 @@ export default function ChatRoom() {
         throw new Error(response.data?.error || 'Failed to add member');
       }
     } catch (error) {
-      console.error('Error adding member:', error);
+      logger.error('Error adding member:', error);
       const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to add member';
       alert(errorMessage);
     } finally {
@@ -1135,26 +1143,49 @@ export default function ChatRoom() {
     
     if (isAIMessage) {
       if (aiPrompt) {
-        console.log('🚀 Sending AI generation request:', aiPrompt);
+        logger.debug('🚀 Sending AI generation request:', aiPrompt);
         
-        // First, save the user's prompt message so it appears in chat
-        socket.emit('send_message', {
-          roomId,
-          content: messageContent, // Save the message with @omega
-          replyTo: replyToMessage?._id || null
-        });
+        // Add optimistic message immediately for better UX
+        const tempId = `temp-${Date.now()}-${Math.random()}`;
+        const optimisticMessage = {
+          _id: tempId,
+          user: user,
+          content: messageContent,
+          createdAt: new Date().toISOString(),
+          replyTo: replyToMessage || null,
+          pending: true
+        };
         
+        setMessages(prev => [...prev, optimisticMessage]);
+        
+        // Force scroll for own message
+        shouldScrollToBottomRef.current = true;
+        setTimeout(() => {
+          scrollToBottom(true);
+          shouldScrollToBottomRef.current = false;
+        }, 50);
+        
+        // Clear input immediately
+        const replyToId = replyToMessage?._id || null;
+        setInputMessage('');
         if (replyToMessage) {
           setReplyToMessage(null);
         }
         
-        // Then trigger AI generation
+        // Send message and trigger AI in parallel (don't wait)
+        socket.emit('send_message', {
+          roomId,
+          content: messageContent,
+          replyTo: replyToId
+        });
+        
+        // Trigger AI immediately without waiting
         socket.emit('ai_generate_code', {
           roomId,
           prompt: aiPrompt,
           context: ''
         });
-        setInputMessage('');
+        
         return;
       } else {
         alert('Please provide a prompt after @omega or "Hey Omega"');
@@ -1174,7 +1205,13 @@ export default function ChatRoom() {
     };
     
     setMessages(prev => [...prev, optimisticMessage]);
-    scrollToBottom();
+    
+    // Force scroll for own messages - always scroll when user sends
+    shouldScrollToBottomRef.current = true;
+    setTimeout(() => {
+      scrollToBottom(true);
+      shouldScrollToBottomRef.current = false;
+    }, 50);
     
     // Clear input and reply immediately
     const messageToSend = messageContent;
@@ -1421,7 +1458,7 @@ export default function ChatRoom() {
       };
 
       recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
+        logger.error('Speech recognition error:', event.error);
         if (event.error === 'no-speech') {
           // User didn't speak, that's okay
         } else {
@@ -1446,7 +1483,7 @@ export default function ChatRoom() {
       recognition.start();
       setIsRecording(true);
     } catch (error) {
-      console.error('Error starting speech recognition:', error);
+      logger.error('Error starting speech recognition:', error);
       alert('Failed to access microphone. Please check your permissions.');
       setIsRecording(false);
       setShowMicInstructions(false);
@@ -1481,13 +1518,14 @@ export default function ChatRoom() {
       setMessages([]);
       scrollToBottom();
     } catch (error) {
-      console.error('Error clearing chat:', error);
+      logger.error('Error clearing chat:', error);
       alert('Failed to clear chat: ' + (error.response?.data?.error || error.message));
     }
   };
 
   // Render markdown text (bold, italic, code, links)
-  const renderMarkdown = (text) => {
+  // Memoize markdown rendering to avoid re-creating on every render
+  const renderMarkdown = useCallback((text) => {
     if (!text || typeof text !== 'string') return text || null;
     
     const result = [];
@@ -1579,7 +1617,7 @@ export default function ChatRoom() {
     }
     
     return result.length > 0 ? result : text;
-  };
+  }, []);
 
   // Show loading state
   if (loading) {
@@ -1645,7 +1683,7 @@ export default function ChatRoom() {
   }
 
   return (
-    <div className="flex h-screen bg-gradient-to-br from-purple-50 via-lavender-50 to-purple-100">
+    <div className="flex h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100">
       {/* Sidebar */}
       <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200">
@@ -1665,7 +1703,7 @@ export default function ChatRoom() {
                 <p className="text-sm text-gray-500 mt-1">{room.project.name}</p>
               )}
               {!room?.project && !room?.repository && (
-                <p className="text-sm text-purple-600 mt-1 font-medium">Personal Chatroom</p>
+                <p className="text-sm text-green-600 mt-1 font-medium">Personal Chatroom</p>
               )}
             </div>
             <button
@@ -1701,7 +1739,7 @@ export default function ChatRoom() {
                   setShowJoinCodeModal(true);
                   setJoinCode('');
                 }}
-                className="p-1.5 text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                className="p-1.5 text-green-600 hover:bg-green-50 rounded transition-colors"
                 title="Join another chatroom via code"
               >
                 <UserPlus size={16} />
@@ -1884,7 +1922,7 @@ export default function ChatRoom() {
             const container = e.target;
             const currentScrollTop = container.scrollTop;
             
-            // Throttle scroll handler - only run every 100ms
+            // Throttle scroll handler - only run every 150ms (reduced frequency for better performance)
             if (scrollThrottleRef.current) {
               clearTimeout(scrollThrottleRef.current);
             }
@@ -1895,12 +1933,12 @@ export default function ChatRoom() {
                 loadMoreMessages();
               }
               
-              // Only check read status if scroll position changed significantly (more than 50px)
+              // Only check read status if scroll position changed significantly (more than 100px)
               const scrollDelta = Math.abs(currentScrollTop - lastScrollTopRef.current);
-              if (scrollDelta > 50) {
+              if (scrollDelta > 100) {
                 lastScrollTopRef.current = currentScrollTop;
                 
-                // Throttle read detection - only check every 500ms
+                // Throttle read detection - only check every 1000ms (less frequent for better performance)
                 if (readDetectionThrottleRef.current) {
                   clearTimeout(readDetectionThrottleRef.current);
                 }
@@ -1926,21 +1964,23 @@ export default function ChatRoom() {
                           }
                         });
                       },
-                      { root: container, rootMargin: '0px', threshold: 0.5 }
+                      { root: container, rootMargin: '0px', threshold: 0.3 }
                     );
                   }
                   
-                  // Observe all message elements
-                  messages.forEach(msg => {
-                    const element = document.getElementById(`message-${msg._id}`);
-                    if (element && intersectionObserverRef.current) {
-                      element.setAttribute('data-message-id', msg._id);
-                      intersectionObserverRef.current.observe(element);
-                    }
-                  });
-                }, 500);
+                  // Observe all message elements (only if observer exists)
+                  if (intersectionObserverRef.current) {
+                    messages.forEach(msg => {
+                      const element = document.getElementById(`message-${msg._id}`);
+                      if (element) {
+                        element.setAttribute('data-message-id', msg._id);
+                        intersectionObserverRef.current.observe(element);
+                      }
+                    });
+                  }
+                }, 1000);
               }
-            }, 100);
+            }, 150);
           }}
         >
           {/* Search Results */}
@@ -2000,7 +2040,7 @@ export default function ChatRoom() {
               {!isOwnMessage && (
                 <div className="flex-shrink-0">
                   {isAIMessage ? (
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center">
                       <Bot size={20} className="text-white" />
                     </div>
                   ) : isDKMessage ? (
@@ -2030,7 +2070,7 @@ export default function ChatRoom() {
               <div
                 className={`max-w-2xl rounded-lg p-4 group relative ${
                   isAIMessage
-                    ? 'bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 text-gray-900'
+                    ? 'bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 text-gray-900'
                     : isDKMessage
                     ? 'bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 text-gray-900'
                     : isChaiWalaMessage
@@ -2178,7 +2218,7 @@ export default function ChatRoom() {
                 )}
                 {!isOwnMessage && (
                   <div className={`text-xs font-semibold mb-2 flex items-center gap-2 ${
-                    isAIMessage ? 'text-purple-700' : isDKMessage ? 'text-green-700' : 'text-gray-700'
+                    isAIMessage ? 'text-green-700' : isDKMessage ? 'text-green-700' : 'text-gray-700'
                   }`}>
                     {isAIMessage && <Bot size={14} />}
                     {isDKMessage && <span className="font-bold">DK</span>}
@@ -2254,7 +2294,7 @@ export default function ChatRoom() {
                                   setCommitError(null);
                                   setCommitSuccess(false);
                                 }}
-                                className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded hover:bg-gray-800 font-medium flex items-center gap-1"
+                                className="text-xs text-green-400 hover:text-green-300 transition-colors px-2 py-1 rounded hover:bg-gray-800 font-medium flex items-center gap-1"
                                 title="Add to Repository"
                               >
                                 <GitBranch size={12} />
@@ -2274,7 +2314,7 @@ export default function ChatRoom() {
                         <div className="prose prose-sm max-w-none">
                           {renderMarkdown(message.content.split(/(@\w+)/g).map((part, idx) => {
                             if (part.startsWith('@')) {
-                              return <span key={idx} className="font-bold text-purple-600 bg-purple-50 px-1 rounded">{part}</span>;
+                              return <span key={idx} className="font-bold text-green-600 bg-green-50 px-1 rounded">{part}</span>;
                             }
                             return part;
                           }).join(''))}
@@ -2380,7 +2420,7 @@ export default function ChatRoom() {
                 <div className="flex items-center justify-between mt-2">
                   <div className={`text-xs ${
                     isAIMessage 
-                      ? 'text-purple-600 opacity-70' 
+                      ? 'text-green-600 opacity-70' 
                       : isOwnMessage 
                       ? 'opacity-70' 
                       : 'text-gray-500'
@@ -2417,20 +2457,20 @@ export default function ChatRoom() {
           
           {isTyping && (
             <div className="flex gap-3 justify-start">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center flex-shrink-0">
                 <Bot size={20} className="text-white" />
               </div>
-              <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+              <div className="bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <Bot size={14} className="text-purple-700" />
-                  <span className="text-xs font-semibold text-purple-700">Omega AI</span>
+                  <Bot size={14} className="text-green-700" />
+                  <span className="text-xs font-semibold text-green-700">Omega AI</span>
                 </div>
                 <div className="flex gap-1">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                  <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                  <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                 </div>
-                <div className="text-xs text-purple-600 mt-2">Thinking...</div>
+                <div className="text-xs text-green-600 mt-2">Thinking...</div>
               </div>
             </div>
           )}
@@ -2554,11 +2594,11 @@ export default function ChatRoom() {
 
           {/* Mic Instructions */}
           {showMicInstructions && (
-            <div className="mb-2 p-3 bg-gradient-to-r from-purple-50 to-blue-50 border-l-2 border-purple-500 rounded-lg flex items-start justify-between animate-pulse">
+            <div className="mb-2 p-3 bg-gradient-to-r from-green-50 to-emerald-50 border-l-2 border-green-500 rounded-lg flex items-start justify-between animate-pulse">
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <Mic size={16} className="text-purple-600" />
-                  <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Listening...</span>
+                  <Mic size={16} className="text-green-600" />
+                  <span className="text-xs font-semibold text-green-700 uppercase tracking-wide">Listening...</span>
                 </div>
                 <div className="text-sm text-gray-700 mb-1">
                   💡 Say <strong>"Hey Omega"</strong> for AI assistance, or speak your message normally
@@ -2627,7 +2667,7 @@ export default function ChatRoom() {
                         }}
                       >
                         {mentionable.isAI ? (
-                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center flex-shrink-0">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center flex-shrink-0">
                             <Bot size={16} className="text-white" />
                           </div>
                         ) : mentionable.isBot ? (
@@ -2646,7 +2686,7 @@ export default function ChatRoom() {
                         <div className="flex-1">
                           <div className="text-sm font-semibold text-gray-900">
                             {mentionable.displayName}
-                            {mentionable.isAI && <span className="ml-2 text-xs text-purple-600">(AI)</span>}
+                            {mentionable.isAI && <span className="ml-2 text-xs text-green-600">(AI)</span>}
                             {mentionable.isBot && <span className="ml-2 text-xs text-green-600">(Bot)</span>}
                           </div>
                           <div className="text-xs text-gray-500">@{mentionable.username}</div>
@@ -2660,7 +2700,7 @@ export default function ChatRoom() {
               )}
               <div className="px-2 pb-2 text-xs text-gray-500 space-y-1">
                 <div className="flex items-center gap-1">
-                  <Bot size={12} className="text-purple-600" />
+                  <Bot size={12} className="text-green-600" />
                   <span>Tip: Type <code className="bg-gray-100 px-1 rounded font-mono">@omega</code> for AI code generation</span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -2668,7 +2708,7 @@ export default function ChatRoom() {
                   <span>Type <code className="bg-gray-100 px-1 rounded font-mono">@</code> to mention members</span>
                 </div>
                 {(room?.project?.githubRepo || room?.repository) && (
-                  <div className="text-purple-600 font-medium flex items-center gap-1 mt-1">
+                  <div className="text-green-600 font-medium flex items-center gap-1 mt-1">
                   <Bot size={12} />
                   <span>Omega AI has access to your repository and can answer questions about your codebase!</span>
                 </div>
@@ -2841,7 +2881,7 @@ export default function ChatRoom() {
                   />
                   <button
                     onClick={copyInviteLink}
-                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
                     title="Copy link"
                   >
                     {linkCopied ? (
@@ -2918,7 +2958,7 @@ export default function ChatRoom() {
                   onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
                   placeholder="Enter 6-character code..."
                   maxLength={6}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                   onKeyPress={(e) => {
                     if (e.key === 'Enter' && joinCode.trim() && !joiningByCode) {
                       handleJoinByCode();
@@ -2945,7 +2985,7 @@ export default function ChatRoom() {
               <button
                 onClick={handleJoinByCode}
                 disabled={joiningByCode || !joinCode.trim()}
-                className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {joiningByCode ? (
                   <>
@@ -3125,7 +3165,7 @@ export default function ChatRoom() {
               setCommitError(null);
             }
           } catch (error) {
-            console.error('Error checking file:', error);
+            logger.error('Error checking file:', error);
             if (error.response?.status === 404) {
               setFileExists(false);
               setCommitError(null);
@@ -3183,7 +3223,7 @@ export default function ChatRoom() {
               }, 2000);
             }
           } catch (error) {
-            console.error('Error committing file:', error);
+            logger.error('Error committing file:', error);
             setCommitError(error.response?.data?.error || 'Failed to commit file to repository');
           } finally {
             setCommitting(false);
@@ -3204,10 +3244,10 @@ export default function ChatRoom() {
               }
             }}
           >
-            <div className="bg-gradient-to-br from-white to-purple-50 rounded-2xl p-6 w-full max-w-lg shadow-2xl border-2 border-purple-200">
+            <div className="bg-gradient-to-br from-white to-green-50 rounded-2xl p-6 w-full max-w-lg shadow-2xl border-2 border-green-200">
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h3 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-lavender-600 bg-clip-text text-transparent">
+                  <h3 className="text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
                     Add to Repository
                   </h3>
                   <p className="text-sm text-gray-600 mt-1">Commit AI-generated content to GitHub</p>
@@ -3250,13 +3290,13 @@ export default function ChatRoom() {
                           setCommitError(null);
                         }}
                         placeholder="e.g., src/components/Button.jsx or README.md"
-                        className="flex-1 px-4 py-2 border-2 border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white"
+                        className="flex-1 px-4 py-2 border-2 border-green-200 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white"
                         disabled={committing}
                       />
                       <button
                         onClick={handleCheckFile}
                         disabled={committing || checkingFile || !commitFilePath.trim()}
-                        className="px-4 py-2 bg-purple-100 text-purple-700 rounded-xl hover:bg-purple-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                        className="px-4 py-2 bg-green-100 text-green-700 rounded-xl hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                       >
                         {checkingFile ? (
                           <Loader2 size={16} className="animate-spin" />
@@ -3291,7 +3331,7 @@ export default function ChatRoom() {
                       value={commitMessage}
                       onChange={(e) => setCommitMessage(e.target.value)}
                       placeholder="e.g., Add new component generated by Omega AI"
-                      className="w-full px-4 py-2 border-2 border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white"
+                      className="w-full px-4 py-2 border-2 border-green-200 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white"
                       disabled={committing}
                     />
                   </div>
@@ -3327,7 +3367,7 @@ export default function ChatRoom() {
                     <button
                       onClick={handleCommit}
                       disabled={committing || !commitFilePath.trim() || !commitMessage.trim()}
-                      className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-lavender-500 text-white rounded-xl hover:from-purple-600 hover:to-lavender-600 transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed font-medium flex items-center justify-center gap-2"
+                      className="flex-1 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl hover:from-green-600 hover:to-emerald-600 transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed font-medium flex items-center justify-center gap-2"
                     >
                       {committing ? (
                         <>

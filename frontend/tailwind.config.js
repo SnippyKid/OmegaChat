@@ -8,28 +8,28 @@ export default {
     extend: {
       colors: {
         primary: {
-          50: '#faf5ff',
-          100: '#f3e8ff',
-          200: '#e9d5ff',
-          300: '#d8b4fe',
-          400: '#c084fc',
-          500: '#a855f7',
-          600: '#9333ea',
-          700: '#7e22ce',
-          800: '#6b21a8',
-          900: '#581c87',
+          50: '#f0fdf4',   // Very light green
+          100: '#dcfce7',  // Light green
+          200: '#bbf7d0',  // Lighter green
+          300: '#86efac',  // Light green
+          400: '#4ade80',  // Medium light green
+          500: '#22c55e',  // Base green
+          600: '#16a34a',  // Medium green (good for buttons)
+          700: '#15803d',  // Darker green
+          800: '#166534',  // Dark green
+          900: '#14532d',  // Very dark green
         },
         lavender: {
-          50: '#f5f3ff',
-          100: '#ede9fe',
-          200: '#ddd6fe',
-          300: '#c4b5fd',
-          400: '#a78bfa',
-          500: '#8b5cf6',
-          600: '#7c3aed',
-          700: '#6d28d9',
-          800: '#5b21b6',
-          900: '#4c1d95',
+          50: '#f0fdf4',   // Match primary for consistency
+          100: '#dcfce7',
+          200: '#bbf7d0',
+          300: '#86efac',
+          400: '#4ade80',
+          500: '#22c55e',
+          600: '#16a34a',
+          700: '#15803d',
+          800: '#166534',
+          900: '#14532d',
         },
       },
     },
