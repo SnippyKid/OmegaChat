@@ -7,8 +7,11 @@ import { getRepositoryStats, formatRepositoryStats, formatActivityNotification }
 
 // Simple in-memory cache for repository context to reduce GitHub API calls and speed up AI replies
 const REPO_CONTEXT_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const REPO_CONTEXT_TIMEOUT_MS = 15000; // 15 seconds
 const MAX_CACHE_SIZE = 100; // Maximum number of cached entries to prevent memory leaks
 const repoContextCache = new Map(); // key: `${repoFullName}:${userId}` -> { context, fetchedAt }
+// Track in-flight fetches to avoid duplicate GitHub calls under load
+const repoContextInFlight = new Map(); // key: `${repoFullName}:${userId}` -> Promise<string>
 
 const getCachedRepoContext = (repoFullName, userId) => {
   const key = `${repoFullName}:${userId}`;
@@ -42,6 +45,60 @@ const setCachedRepoContext = (repoFullName, userId, context) => {
   
   const key = `${repoFullName}:${userId}`;
   repoContextCache.set(key, { context, fetchedAt: Date.now() });
+};
+
+// Fetch repository context with cache + in-flight dedupe
+const fetchRepoContextWithCache = async (repoFullName, userId, githubToken) => {
+  const cacheKey = `${repoFullName}:${userId}`;
+  const cached = getCachedRepoContext(repoFullName, userId);
+  if (cached) return cached;
+
+  if (repoContextInFlight.has(cacheKey)) {
+    return repoContextInFlight.get(cacheKey);
+  }
+
+  const fetchPromise = (async () => {
+    const contextPromise = getRepositoryContext(repoFullName, githubToken);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Context fetch timeout after 15 seconds')), REPO_CONTEXT_TIMEOUT_MS)
+    );
+    const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
+
+    // Format repository context for AI (limit size to avoid token limits)
+    const fileContents = repoInfo.files
+      .map(f => {
+        // Limit each file to 1500 chars to stay within token limits
+        const content = f.content.length > 1500
+          ? f.content.substring(0, 1500) + '... (truncated)'
+          : f.content;
+        return `\n--- ${f.path} ---\n${content}`;
+      })
+      .join('\n\n');
+
+    // Limit total context size (approximately 8000 chars max)
+    const maxContextLength = 8000;
+    const contextHeader = `Repository Context:
+- Repository: ${repoInfo.name}
+- Description: ${repoInfo.description || 'N/A'}
+- Primary Language: ${repoInfo.language || 'N/A'}
+- Branch: ${repoInfo.branch}
+- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
+
+Key File Contents:`;
+
+    const fullContext = contextHeader + fileContents;
+    const repoContext = fullContext.length > maxContextLength
+      ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
+      : fullContext;
+
+    setCachedRepoContext(repoFullName, userId, repoContext);
+    return repoContext;
+  })().finally(() => {
+    repoContextInFlight.delete(cacheKey);
+  });
+
+  repoContextInFlight.set(cacheKey, fetchPromise);
+  return fetchPromise;
 };
 
 // Lazy-load User model to avoid any initialization timing issues
@@ -447,39 +504,14 @@ export function setupSocketIO(io) {
                         setTimeout(() => reject(new Error('Context fetch timeout after 15 seconds')), 15000)
                       );
                       
-                  const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
-                  
-                  // Format repository context for AI (limit size to avoid token limits)
-                  const fileContents = repoInfo.files
-                        .map(f => {
-                          // Limit each file to 1500 chars to stay within token limits
-                          const content = f.content.length > 1500 
-                            ? f.content.substring(0, 1500) + '... (truncated)'
-                            : f.content;
-                          return `\n--- ${f.path} ---\n${content}`;
-                        })
-                        .join('\n\n');
-                      
-                      // Limit total context size (approximately 8000 chars max)
-                      const maxContextLength = 8000;
-                      const contextHeader = `Repository Context:
-- Repository: ${repoInfo.name}
-- Description: ${repoInfo.description || 'N/A'}
-- Primary Language: ${repoInfo.language || 'N/A'}
-- Branch: ${repoInfo.branch}
-- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
-
-Key File Contents:`;
-
-                      const fullContext = contextHeader + fileContents;
-                      repoContext = fullContext.length > maxContextLength
-                        ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
-                        : fullContext;
-                      repoAccessInfo.contextFetched = true;
-                      setCachedRepoContext(project.githubRepo.fullName, socket.userId, repoContext);
-                      console.log('✅ Repository context fetched successfully!');
-                      console.log(`   - Files included: ${repoInfo.files.length}`);
-                      console.log(`   - Context length: ${repoContext.length} chars`);
+                  repoContext = await fetchRepoContextWithCache(
+                    project.githubRepo.fullName,
+                    socket.userId,
+                    user.githubToken
+                  );
+                  repoAccessInfo.contextFetched = true;
+                  console.log('✅ Repository context fetched successfully!');
+                  console.log(`   - Context length: ${repoContext.length} chars`);
                     } catch (fetchError) {
                       repoAccessInfo.error = fetchError.message || 'Failed to fetch repository context';
                       console.error('❌ Error fetching repository context:', fetchError.message);
@@ -533,39 +565,14 @@ Key File Contents:`;
                     setTimeout(() => reject(new Error('Context fetch timeout after 15 seconds')), 15000)
                   );
                   
-                  const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
-                  
-                  // Format repository context for AI (limit size to avoid token limits)
-                  const fileContents = repoInfo.files
-                    .map(f => {
-                      // Limit each file to 1500 chars to stay within token limits
-                      const content = f.content.length > 1500 
-                        ? f.content.substring(0, 1500) + '... (truncated)'
-                        : f.content;
-                      return `\n--- ${f.path} ---\n${content}`;
-                    })
-                    .join('\n\n');
-                  
-                  // Limit total context size (approximately 8000 chars max)
-                  const maxContextLength = 8000;
-                  const contextHeader = `Repository Context:
-- Repository: ${repoInfo.name}
-- Description: ${repoInfo.description || 'N/A'}
-- Primary Language: ${repoInfo.language || 'N/A'}
-- Branch: ${repoInfo.branch}
-- Key Files: ${repoInfo.structure.slice(0, 10).join(', ')}
-
-Key File Contents:`;
-
-                  const fullContext = contextHeader + fileContents;
-                  repoContext = fullContext.length > maxContextLength
-                    ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
-                    : fullContext;
-                  repoAccessInfo.contextFetched = true;
-                  setCachedRepoContext(room.repository, socket.userId, repoContext);
-                  console.log('✅ Repository context fetched successfully!');
-                  console.log(`   - Files included: ${repoInfo.files.length}`);
-                  console.log(`   - Context length: ${repoContext.length} chars`);
+                repoContext = await fetchRepoContextWithCache(
+                  room.repository,
+                  socket.userId,
+                  user.githubToken
+                );
+                repoAccessInfo.contextFetched = true;
+                console.log('✅ Repository context fetched successfully!');
+                console.log(`   - Context length: ${repoContext.length} chars`);
                 } catch (fetchError) {
                   repoAccessInfo.error = fetchError.message || 'Failed to fetch repository context';
                   console.error('❌ Error fetching repository context:', fetchError.message);
