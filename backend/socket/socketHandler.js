@@ -525,8 +525,9 @@ Key File Contents:`;
         }
         
         // Combine user context with repository context
+        // Make it clear to AI that repository context contains actual file contents
         const fullContext = repoContext 
-          ? `${repoContext}\n\nUser Question: ${context || cleanPrompt}`.trim() 
+          ? `${repoContext}\n\n---\n\nUser Question/Request: ${context || cleanPrompt}`.trim() 
           : (context || cleanPrompt);
         
         console.log('📝 Final context being sent to AI:');
