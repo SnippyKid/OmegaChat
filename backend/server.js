@@ -32,7 +32,7 @@ const app = express();
 // Middleware
 const allowedOrigins = process.env.FRONTEND_URL 
   ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
-  : ["http://localhost:5173"];
+  : ["http://localhost:5173", "https://omega-chat-frontend.vercel.app"];
 
 app.use(cors({
   origin: function (origin, callback) {

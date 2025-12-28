@@ -58,13 +58,17 @@ export async function generateCodeSnippet(prompt, context = '') {
     // Initialize GoogleGenerativeAI with the API key
     const genAI = new GoogleGenerativeAI(apiKey.trim());
 
+    // Preferred model (free/fast): default to gemini-1.5-flash if not explicitly set
+    const preferredModel = process.env.GEMINI_MODEL?.trim() || 'gemini-1.5-flash';
+
     // Pick the fastest available model without doing multiple probe calls.
-    // Order: explicit env override -> cached working -> default flash -> pro fallbacks.
+    // Order: explicit/env (or default flash) -> cached working -> flash -> flash-002 -> pro fallbacks.
     const now = Date.now();
     const modelCandidates = [
-      process.env.GEMINI_MODEL?.trim(),
+      preferredModel,
       (cachedWorkingModel && (now - modelCacheTime) < MODEL_CACHE_DURATION) ? cachedWorkingModel : null,
       'gemini-1.5-flash',
+      'gemini-1.5-flash-002',
       'gemini-1.5-pro',
       'gemini-pro'
     ].filter(Boolean);
@@ -74,6 +78,8 @@ export async function generateCodeSnippet(prompt, context = '') {
     let model = null;
     let successfulModel = null;
 
+    let attempted404 = false;
+    let lastError = null;
     for (const candidate of uniqueCandidates) {
       try {
         model = genAI.getGenerativeModel({ model: candidate });
@@ -82,12 +88,34 @@ export async function generateCodeSnippet(prompt, context = '') {
         modelCacheTime = now;
         break;
       } catch (e) {
+        if (e.message?.includes('404') || e.message?.includes('not found') || e.message?.includes('No such model')) {
+          attempted404 = true;
+        }
+        lastError = e;
         console.log(`⚠️ Failed to init model ${candidate}:`, e.message);
       }
     }
 
+    // If no working model, try listAvailableModels
     if (!model) {
-      throw new Error('No valid Gemini model could be initialized. Check GEMINI_MODEL or try gemini-1.5-flash.');
+      if (attempted404) {
+        const availableModels = await listAvailableModels(apiKey.trim());
+        if (availableModels.length > 0) {
+          try {
+            model = genAI.getGenerativeModel({ model: availableModels[0] });
+            successfulModel = availableModels[0];
+            cachedWorkingModel = availableModels[0];
+            modelCacheTime = now;
+            console.log('✅ Fallback to available model:', availableModels[0]);
+          } catch (e) {
+            lastError = e;
+          }
+        }
+      }
+    }
+
+    if (!model) {
+      throw new Error('No valid Gemini model could be initialized for this API key. ' + (lastError?.message || 'No available model found by Google API.'));
     }
 
     const systemInstruction = `You are Omega, an AI code assistant. 
@@ -145,15 +173,18 @@ When repository context is provided in the user message (you'll see "Repository 
     let result;
     let response;
     
+    const invokeModel = async (mdl) => {
+      const res = await mdl.generateContent(fullPrompt);
+      return res.response.text();
+    };
+
     try {
       // Generate content - ensure model is valid
       if (!model) {
         throw new Error('No valid model found. Please check your API key and model availability.');
       }
       
-      result = await model.generateContent(fullPrompt);
-      // text() is synchronous in Google Generative AI SDK
-      response = result.response.text();
+      response = await invokeModel(model);
     } catch (apiError) {
       console.error('❌ Gemini API call failed:', apiError);
       console.error('API Error details:', {
@@ -190,20 +221,22 @@ Original error: ${apiError.message}`;
       }
       
       if (apiError.message?.includes('404') || apiError.message?.includes('not found')) {
-        const helpfulMessage = `Gemini API model not found (404). The model 'gemini-pro' should be available. 
-
-Possible causes:
-1. API key doesn't have access to the model
-2. Model name is incorrect
-3. API version mismatch
-
-Please:
-- Verify your API key has access to Gemini models
-- Check API key permissions at: https://aistudio.google.com/apikey
-- Try regenerating your API key
-
-Original error: ${apiError.message}`;
-        throw new Error(helpfulMessage);
+        // On 404, refresh available models and retry once with first working model
+        const availableModels = await listAvailableModels(apiKey.trim());
+        if (availableModels.length > 0) {
+          try {
+            const fallbackModel = genAI.getGenerativeModel({ model: availableModels[0] });
+            cachedWorkingModel = availableModels[0];
+            modelCacheTime = Date.now();
+            response = await invokeModel(fallbackModel);
+          } catch (retryError) {
+            const helpfulMessage = `Gemini API model not found (404) and retry failed. Tried models: ${availableModels.join(', ') || 'none'}. Original: ${apiError.message}. Retry: ${retryError.message}`;
+            throw new Error(helpfulMessage);
+          }
+        } else {
+          const helpfulMessage = `Gemini API model not found (404). No available models returned for this API key. Original error: ${apiError.message}`;
+          throw new Error(helpfulMessage);
+        }
       }
       
       throw new Error(`Gemini API error: ${apiError.message || 'Unknown API error'}`);
