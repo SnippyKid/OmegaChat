@@ -447,8 +447,10 @@ export function setupSocketIO(io) {
                         setTimeout(() => reject(new Error('Context fetch timeout after 15 seconds')), 15000)
                       );
                       
-                        // Format repository context for AI (limit size to avoid token limits)
-                      const fileContents = repoInfo.files
+                  const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
+                  
+                  // Format repository context for AI (limit size to avoid token limits)
+                  const fileContents = repoInfo.files
                         .map(f => {
                           // Limit each file to 1500 chars to stay within token limits
                           const content = f.content.length > 1500 
