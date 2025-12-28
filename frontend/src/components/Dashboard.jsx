@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import apiClient from '../config/axios';
+import { logger } from '../utils/logger';
 import { MessageSquare, Plus, LogOut, Github, Mail, Users, Linkedin, MessageCircle, X, Copy, Key, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, Trash2, Edit2, MoreVertical, LogOut as LeaveIcon, Eye } from 'lucide-react';
 
 export default function Dashboard() {
@@ -60,7 +61,9 @@ export default function Dashboard() {
 
   // Debug: log projects when they change (can be removed later)
   useEffect(() => {
-    console.debug('Projects loaded:', projects);
+    if (import.meta.env.MODE === 'development') {
+      console.debug('Projects loaded:', projects);
+    }
   }, [projects]);
 
   const fetchGithubStats = useCallback(async () => {
@@ -110,7 +113,7 @@ export default function Dashboard() {
       });
       setRepositories(response.data.repositories || []);
     } catch (error) {
-      console.error('Error fetching repositories:', error);
+      logger.error('Error fetching repositories:', error);
       showNotification('Failed to load repositories', 'error');
     } finally {
       setFetchingRepos(false);
@@ -124,7 +127,7 @@ export default function Dashboard() {
       });
       setProjects(response.data.projects || []);
     } catch (error) {
-      console.error('Error fetching projects:', error);
+      logger.error('Error fetching projects:', error);
       showNotification('Failed to load projects', 'error');
     } finally {
       setLoading(false);
@@ -316,13 +319,13 @@ export default function Dashboard() {
   };
 
   const handleAddMemberToChatroom = async (roomId) => {
-    console.log('handleAddMemberToChatroom called with roomId:', roomId);
-    console.log('addMemberBy:', addMemberBy);
-    console.log('memberUsername:', memberUsername);
-    console.log('memberEmail:', memberEmail);
+    logger.debug('handleAddMemberToChatroom called with roomId:', roomId);
+    logger.debug('addMemberBy:', addMemberBy);
+    logger.debug('memberUsername:', memberUsername);
+    logger.debug('memberEmail:', memberEmail);
     
     if (!roomId) {
-      console.error('No roomId provided');
+      logger.error('No roomId provided');
       showNotification('Invalid room ID', 'error');
       return;
     }
@@ -342,8 +345,8 @@ export default function Dashboard() {
         ? { username: memberUsername.trim() }
         : { email: memberEmail.trim() };
       
-      console.log('Sending request to:', `/api/chat/${roomId}/members/add`);
-      console.log('Payload:', payload);
+      logger.debug('Sending request to:', `/api/chat/${roomId}/members/add`);
+      logger.debug('Payload:', payload);
       
       const response = await apiClient.post(`/api/chat/${roomId}/members/add`, 
         payload,
@@ -353,7 +356,7 @@ export default function Dashboard() {
         }
       );
       
-      console.log('Response received:', response.data);
+      logger.debug('Response received:', response.data);
       
       if (response.data && response.data.success) {
         showNotification(response.data.message || 'Member added successfully!', 'success');
@@ -365,7 +368,7 @@ export default function Dashboard() {
             fetchPersonalRooms()
           ]);
         } catch (refreshError) {
-          console.warn('Error refreshing data:', refreshError);
+          logger.warn('Error refreshing data:', refreshError);
         }
         
         // Close modal and reset state
@@ -377,8 +380,8 @@ export default function Dashboard() {
         throw new Error(response.data?.error || 'Failed to add member');
       }
     } catch (error) {
-      console.error('Error adding member:', error);
-      console.error('Error response:', error.response?.data);
+      logger.error('Error adding member:', error);
+      logger.error('Error response:', error.response?.data);
       const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message || 'Failed to add member';
       showNotification(errorMessage, 'error');
     } finally {
@@ -636,7 +639,7 @@ export default function Dashboard() {
                           error.message || 
                           'Failed to join. Please check the group code and try again.';
       showNotification(errorMessage, 'error');
-      console.error('Join error:', error);
+      logger.error('Join error:', error);
     } finally {
       setJoiningCode(false);
     }
@@ -1066,7 +1069,7 @@ export default function Dashboard() {
                                           const roomIdStr = typeof roomId === 'object' && roomId._id 
                                             ? roomId._id.toString() 
                                             : roomId.toString();
-                                          console.log('Opening add member modal for room:', roomIdStr);
+                                          logger.debug('Opening add member modal for room:', roomIdStr);
                                           setShowAddMemberModal(roomIdStr);
                                           setMemberUsername('');
                                           setMemberEmail('');
@@ -1245,7 +1248,7 @@ export default function Dashboard() {
                                     await navigator.clipboard.writeText(inviteLink);
                                     showNotification('Invite link copied to clipboard!', 'success');
                                   } catch (error) {
-                                    console.error('Error getting group code:', error);
+                                    logger.error('Error getting group code:', error);
                                     showNotification('Failed to get invite link: ' + (error.response?.data?.error || error.message), 'error');
                                   }
                                   setShowRoomMenu(null);

@@ -204,16 +204,6 @@ router.get('/room/:roomId/messages', authenticateToken, async (req, res) => {
         return msgObj;
       }
       
-      // Handle ChaiWala bot messages specially
-      if (msgObj.type === 'chaiwala_bot') {
-        msgObj.user = {
-          _id: 'chaiwala-bot',
-          username: 'ChaiWala',
-          avatar: '/avatars/chaiwala-avatar.png'
-        };
-        return msgObj;
-      }
-      
       const userId = msgObj.user?._id?.toString() || msgObj.user?.toString() || msgObj.user;
       
       if (userId && userMap.has(userId)) {
@@ -372,10 +362,28 @@ router.get('/room/:roomId', authenticateToken, async (req, res) => {
     
     // Now populate for response
     await room.populate('members', 'username avatar online');
-    await room.populate('project', 'name githubRepo');
+    // Populate project with githubRepo to ensure repository access info is available
+    await room.populate({
+      path: 'project',
+      select: 'name githubRepo members',
+      populate: {
+        path: 'members.user',
+        select: 'username avatar'
+      }
+    });
     
     // Include pinned messages in response
     const roomData = room.toObject ? room.toObject() : { ...room._doc || room };
+    
+    // Log repository access info for debugging
+    if (roomData.project) {
+      console.log('📊 Room repository access info:', {
+        hasProject: !!roomData.project,
+        hasGithubRepo: !!(roomData.project.githubRepo && roomData.project.githubRepo.fullName),
+        repoFullName: roomData.project.githubRepo?.fullName || null,
+        hasRepository: !!roomData.repository
+      });
+    }
     roomData.pinnedMessages = room.pinnedMessages || [];
     
     res.json({ 
@@ -1047,12 +1055,6 @@ router.get('/room/:roomId/search', authenticateToken, async (req, res) => {
           _id: 'dk-bot',
           username: 'DK',
           avatar: '/avatars/dk-avatar.png'
-        };
-      } else if (msgObj.type === 'chaiwala_bot') {
-        msgObj.user = {
-          _id: 'chaiwala-bot',
-          username: 'ChaiWala',
-          avatar: '/avatars/chaiwala-avatar.png'
         };
       } else {
         const userId = msgObj.user?.toString() || msgObj.user;

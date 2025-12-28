@@ -5,7 +5,6 @@ import Project from '../models/Project.js';
 import { generateCodeSnippet } from '../services/aiService.js';
 import { getRepositoryContext } from '../services/githubService.js';
 import { getRepositoryStats, formatRepositoryStats, formatActivityNotification } from '../services/dkBotService.js';
-import { generateWelcomeMessage } from '../services/chaiwalaBotService.js';
 
 export function setupSocketIO(io) {
   // Authentication middleware for Socket.io
@@ -111,66 +110,6 @@ export function setupSocketIO(io) {
           username: socket.user.username
         });
         
-        // Send ChaiWala welcome message only to the new user (not everyone)
-        // Check if user was already welcomed recently to avoid spam
-        try {
-          // Check for any recent ChaiWala messages (within last 10 minutes)
-          const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-          const recentChaiWalaMessages = room.messages
-            .filter(msg => {
-              if (msg.type !== 'chaiwala_bot') return false;
-              const msgDate = msg.createdAt ? new Date(msg.createdAt) : null;
-              return msgDate && msgDate > tenMinutesAgo;
-            });
-          
-          // Only send welcome if there are no recent ChaiWala messages (to avoid spam)
-          // This prevents multiple welcomes when users reconnect or rejoin
-          const shouldWelcome = recentChaiWalaMessages.length === 0;
-          
-          if (shouldWelcome) {
-            const welcomeContent = generateWelcomeMessage(socket.user.username, room.name);
-            
-            // Create message object for immediate emission (don't wait for DB save)
-            const messageForClient = {
-              _id: `temp-${Date.now()}`,
-              content: welcomeContent,
-              type: 'chaiwala_bot',
-              user: {
-                _id: 'chaiwala-bot',
-                username: 'ChaiWala',
-                avatar: '/avatars/chaiwala-avatar.png'
-              },
-              createdAt: new Date(),
-              updatedAt: new Date()
-            };
-            
-            // Emit immediately to the new user only
-            socket.emit('chaiwala_welcome', {
-              message: messageForClient,
-              roomId,
-              newMember: socket.user.username
-            });
-            
-            // Save to database in background (don't block)
-            const welcomeMessage = {
-              content: welcomeContent,
-              type: 'chaiwala_bot',
-              createdAt: new Date(),
-              updatedAt: new Date()
-            };
-            
-            room.messages.push(welcomeMessage);
-            room.lastMessage = new Date();
-            room.save().catch(err => {
-              console.error('Error saving ChaiWala welcome message:', err);
-            });
-            
-            console.log(`☕ ChaiWala welcomed ${socket.user.username} in room ${roomId}`);
-          }
-        } catch (error) {
-          console.error('Error sending ChaiWala welcome:', error);
-          // Don't block the join process if welcome fails
-        }
         
         console.log(`✅ User ${socket.user.username} joined room ${roomId}`);
       } else {
@@ -364,8 +303,17 @@ export function setupSocketIO(io) {
         io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
         
         // Use select to only fetch needed fields for better performance
+        // Include project to get repository access
         const room = await ChatRoom.findById(roomId)
-          .select('members project repository messages');
+          .select('members project repository messages')
+          .populate({
+            path: 'project',
+            select: 'name githubRepo members',
+            populate: {
+              path: 'members.user',
+              select: 'username'
+            }
+          });
         if (!room) {
           io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           return socket.emit('error', { message: 'Room not found' });
@@ -391,23 +339,52 @@ export function setupSocketIO(io) {
         
         // Get repository context if available (with timeout to prevent delays)
         let repoContext = '';
+        let repoAccessInfo = {
+          hasProject: !!room.project,
+          hasRepository: !!room.repository,
+          hasGithubToken: false,
+          repoFullName: null,
+          contextFetched: false,
+          error: null
+        };
+        
         try {
+          console.log('🔍 Checking repository access...');
+          console.log('   - Room has project:', !!room.project);
+          console.log('   - Room has repository:', !!room.repository);
+          
           if (room.project) {
+            console.log('📦 Room is linked to a project, checking project repository...');
             const project = await Project.findById(room.project);
-            if (project && project.githubRepo && project.githubRepo.fullName) {
-              const user = await User.findById(socket.userId);
-              if (user && user.githubToken) {
-                console.log('📂 Fetching repository context...');
-                // Add timeout to prevent long delays (2 seconds max - reduced for faster response)
-                const contextPromise = getRepositoryContext(
-                  project.githubRepo.fullName,
-                  user.githubToken
-                );
-                const timeoutPromise = new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error('Context fetch timeout')), 2000)
-                );
+            if (project) {
+              console.log('   - Project found:', project.name);
+              console.log('   - Project has githubRepo:', !!project.githubRepo);
+              if (project.githubRepo) {
+                console.log('   - GitHub repo fullName:', project.githubRepo.fullName);
+                repoAccessInfo.repoFullName = project.githubRepo.fullName;
+              }
+              
+              if (project && project.githubRepo && project.githubRepo.fullName) {
+                const user = await User.findById(socket.userId).select('githubToken');
+                console.log('   - User found:', !!user);
+                console.log('   - User has githubToken:', !!(user && user.githubToken));
+                repoAccessInfo.hasGithubToken = !!(user && user.githubToken);
                 
-                const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
+                if (user && user.githubToken) {
+                  console.log('📂 Fetching repository context from project...');
+                  console.log(`   - Repository: ${project.githubRepo.fullName}`);
+                  console.log(`   - Token present: ${user.githubToken.substring(0, 10)}...`);
+                  
+                  // Increase timeout to 5 seconds for better reliability
+                  const contextPromise = getRepositoryContext(
+                    project.githubRepo.fullName,
+                    user.githubToken
+                  );
+                  const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Context fetch timeout after 5 seconds')), 5000)
+                  );
+                  
+                  const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
                 
                 // Format repository context for AI (limit size to avoid token limits)
                 const fileContents = repoInfo.files
@@ -435,21 +412,46 @@ Key File Contents:`;
                 repoContext = fullContext.length > maxContextLength
                   ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
                   : fullContext;
-                console.log('✅ Repository context fetched');
+                repoAccessInfo.contextFetched = true;
+                console.log('✅ Repository context fetched successfully!');
+                console.log(`   - Files included: ${repoInfo.files.length}`);
+                console.log(`   - Context length: ${repoContext.length} chars`);
+              } else {
+                if (!user) {
+                  repoAccessInfo.error = 'User not found';
+                  console.warn('⚠️ User not found for repository access');
+                } else if (!user.githubToken) {
+                  repoAccessInfo.error = 'GitHub token not found. Please connect your GitHub account.';
+                  console.warn('⚠️ User does not have GitHub token. Repository context will not be available.');
+                }
               }
+            } else {
+              repoAccessInfo.error = 'Project not found';
+              console.warn('⚠️ Project not found');
             }
           } else if (room.repository) {
             // Direct repository chatroom
-            const user = await User.findById(socket.userId);
+            console.log('📦 Room has direct repository link, checking...');
+            console.log('   - Repository:', room.repository);
+            repoAccessInfo.repoFullName = room.repository;
+            
+            const user = await User.findById(socket.userId).select('githubToken');
+            console.log('   - User found:', !!user);
+            console.log('   - User has githubToken:', !!(user && user.githubToken));
+            repoAccessInfo.hasGithubToken = !!(user && user.githubToken);
+            
             if (user && user.githubToken) {
               console.log('📂 Fetching repository context from room repository...');
-              // Add timeout to prevent long delays (2 seconds max - reduced for faster response)
+              console.log(`   - Repository: ${room.repository}`);
+              console.log(`   - Token present: ${user.githubToken.substring(0, 10)}...`);
+              
+              // Increase timeout to 5 seconds for better reliability
               const contextPromise = getRepositoryContext(
                 room.repository,
                 user.githubToken
               );
               const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Context fetch timeout')), 2000)
+                setTimeout(() => reject(new Error('Context fetch timeout after 5 seconds')), 5000)
               );
               
               const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
@@ -480,16 +482,56 @@ Key File Contents:`;
               repoContext = fullContext.length > maxContextLength
                 ? fullContext.substring(0, maxContextLength) + '\n\n... (context truncated)'
                 : fullContext;
-              console.log('✅ Repository context fetched');
+              repoAccessInfo.contextFetched = true;
+              console.log('✅ Repository context fetched successfully!');
+              console.log(`   - Files included: ${repoInfo.files.length}`);
+              console.log(`   - Context length: ${repoContext.length} chars`);
+            } else {
+              if (!user) {
+                repoAccessInfo.error = 'User not found';
+                console.warn('⚠️ User not found for repository access');
+              } else if (!user.githubToken) {
+                repoAccessInfo.error = 'GitHub token not found. Please connect your GitHub account.';
+                console.warn('⚠️ User does not have GitHub token. Repository context will not be available.');
+              }
             }
+          } else {
+            repoAccessInfo.error = 'No repository linked to this room';
+            console.log('ℹ️ Room is not linked to a project or repository');
           }
         } catch (repoError) {
-          console.log('⚠️ Could not fetch repository context:', repoError.message);
-          // Continue without repo context - not critical
+          repoAccessInfo.error = repoError.message || 'Failed to fetch repository context';
+          console.error('❌ Could not fetch repository context:', repoError.message);
+          console.error('   Error details:', repoError.stack);
+          // Continue without repo context - not critical, but log it
+        }
+        
+        // Log repository access summary
+        console.log('📊 ========== REPOSITORY ACCESS SUMMARY ==========');
+        console.log(JSON.stringify(repoAccessInfo, null, 2));
+        console.log('   - Has repository context:', !!repoContext);
+        console.log('   - Context length:', repoContext?.length || 0, 'chars');
+        
+        if (!repoContext) {
+          console.warn('⚠️ No repository context available. AI will not have access to your codebase.');
+          if (repoAccessInfo.error) {
+            console.warn(`   Reason: ${repoAccessInfo.error}`);
+          }
+          console.warn('   To enable repository access:');
+          console.warn('   1. Make sure your room is linked to a project with a GitHub repository');
+          console.warn('   2. Connect your GitHub account and authorize access');
+          console.warn('   3. Ensure you have a valid GitHub token');
         }
         
         // Combine user context with repository context
-        const fullContext = repoContext ? `${repoContext}\n\n${context || ''}`.trim() : context;
+        const fullContext = repoContext 
+          ? `${repoContext}\n\nUser Question: ${context || cleanPrompt}`.trim() 
+          : (context || cleanPrompt);
+        
+        console.log('📝 Final context being sent to AI:');
+        console.log(`   - Has repository context: ${!!repoContext}`);
+        console.log(`   - Repository context length: ${repoContext?.length || 0} chars`);
+        console.log(`   - Full context length: ${fullContext.length} chars`);
         
         // Generate code using AI with timeout to prevent hanging
         let aiResponse;
@@ -590,6 +632,15 @@ Key File Contents:`;
             code: aiResponse.code,
             explanation: aiResponse.explanation,
             language: aiResponse.language
+          },
+          // Include repository access info for debugging
+          repoAccessInfo: !repoContext ? {
+            hasAccess: false,
+            reason: repoAccessInfo.error || 'No repository linked',
+            suggestion: 'Link a GitHub repository to your project to enable AI codebase access'
+          } : {
+            hasAccess: true,
+            repoName: repoAccessInfo.repoFullName
           }
         };
         

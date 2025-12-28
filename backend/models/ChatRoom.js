@@ -6,7 +6,7 @@ const messageSchema = new mongoose.Schema({
     ref: 'User',
     required: function() {
       // User is not required for bot messages
-      return !['chaiwala_bot', 'dk_bot', 'system'].includes(this.type);
+      return !['dk_bot', 'system'].includes(this.type);
     }
   },
   content: {
@@ -15,7 +15,7 @@ const messageSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['text', 'voice', 'ai_code', 'system', 'image', 'file', 'dk_bot', 'chaiwala_bot'],
+      enum: ['text', 'voice', 'ai_code', 'system', 'image', 'file', 'dk_bot'],
     default: 'text'
   },
   dkBotData: {

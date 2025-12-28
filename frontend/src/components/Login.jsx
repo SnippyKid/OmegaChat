@@ -36,7 +36,10 @@ export default function Login() {
     const apiUrl = import.meta.env.VITE_API_URL;
     if (!apiUrl && !errorParam) {
       setError('Backend API URL is not configured. Please set VITE_API_URL environment variable in Vercel settings.');
-      console.error('VITE_API_URL is not set in environment variables.');
+      // VITE_API_URL check - only log in development
+      if (import.meta.env.DEV) {
+        console.error('VITE_API_URL is not set in environment variables.');
+      }
     }
   }, [searchParams]);
 
@@ -48,7 +51,10 @@ export default function Login() {
     // Check if API URL is configured
     if (!apiUrl) {
       setError('Backend API URL is not configured. Please set VITE_API_URL environment variable in Vercel.');
-      console.error('VITE_API_URL is not set. Cannot redirect to GitHub OAuth.');
+      // VITE_API_URL check - only log in development
+      if (import.meta.env.DEV) {
+        console.error('VITE_API_URL is not set. Cannot redirect to GitHub OAuth.');
+      }
       return;
     }
     

@@ -371,19 +371,19 @@ export default function ChatRoom() {
     newSocket.on('new_message', (data) => {
       messageUpdateQueue.push(data);
       
-      // Batch updates - flush every 50ms or immediately if queue is getting large
+      // Batch updates - flush every 100ms or immediately if queue is getting large (increased for better performance)
       if (messageUpdateTimeoutRef.current) {
         clearTimeout(messageUpdateTimeoutRef.current);
       }
       
-      if (messageUpdateQueue.length >= 5) {
+      if (messageUpdateQueue.length >= 10) {
         // Flush immediately if queue is large
         flushMessageUpdates();
       } else {
-        // Otherwise batch for 50ms
+        // Otherwise batch for 100ms (increased from 50ms to reduce re-renders)
         messageUpdateTimeoutRef.current = setTimeout(() => {
           flushMessageUpdates();
-        }, 50);
+        }, 100);
       }
     });
 
@@ -440,33 +440,6 @@ export default function ChatRoom() {
       }
     });
 
-    // ChaiWala Bot events
-    newSocket.on('chaiwala_welcome', (data) => {
-      logger.debug('☕ Received ChaiWala welcome:', data);
-      if (data.message) {
-        setMessages(prev => {
-          const exists = prev.some(msg => msg._id === data.message._id);
-          if (!exists) {
-            // Only scroll for welcome if user is near bottom (not always needed)
-            const container = messagesContainerRef.current;
-            if (container) {
-              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
-              shouldScrollToBottomRef.current = isNearBottom;
-            } else {
-              shouldScrollToBottomRef.current = true;
-            }
-            return [...prev, data.message];
-          }
-          return prev;
-        });
-        requestAnimationFrame(() => {
-          setTimeout(() => {
-            scrollToBottom();
-            shouldScrollToBottomRef.current = false;
-          }, 50);
-        });
-      }
-    });
 
     // New feature event listeners
     newSocket.on('message_edited', (data) => {
@@ -527,7 +500,6 @@ export default function ChatRoom() {
 
     newSocket.on('ai_typing', () => {
       logger.debug('🤖 AI is typing...');
-      console.log('🤖 AI typing indicator received');
       setIsTyping(true);
       // Clear any existing timeout
       if (aiTypingTimeoutRef.current) {
@@ -537,7 +509,6 @@ export default function ChatRoom() {
       aiTypingTimeoutRef.current = setTimeout(() => {
         setIsTyping(false);
         logger.warn('⏱️ AI typing timeout - no response after 30 seconds');
-        console.warn('⏱️ AI typing timeout - check backend logs for errors');
         // Add timeout message to chat
         setMessages(prev => [...prev, {
           _id: `timeout-${Date.now()}`,
@@ -561,7 +532,6 @@ export default function ChatRoom() {
 
     newSocket.on('error', (error) => {
       logger.error('❌ Socket error:', error);
-      console.error('Full error object:', error);
       // Turn off typing indicator on error
       setIsTyping(false);
       if (aiTypingTimeoutRef.current) {
@@ -605,6 +575,8 @@ export default function ChatRoom() {
 
     return () => {
       logger.debug('🧹 Cleaning up socket connection');
+      // Remove all event listeners to prevent memory leaks
+      newSocket.removeAllListeners();
       // Leave room before disconnecting
       if (roomId && newSocket.connected) {
         newSocket.emit('leave_room', roomId);
@@ -642,7 +614,7 @@ export default function ChatRoom() {
       }
       setIsTyping(false);
     };
-  }, [roomId, token, messages.length]);
+  }, [roomId, token]); // Removed messages.length to prevent unnecessary reconnections
 
   // Removed duplicate useEffect - messages are fetched in the main useEffect below
 
@@ -755,15 +727,12 @@ export default function ChatRoom() {
       const messageUserId = message.user?._id || message.user;
       const isAIMessage = message.type === 'ai_code' || message.user?.username === 'Omega AI' || message.user?.username === 'omega';
       const isDKMessage = message.type === 'dk_bot' || message.user?.username === 'DK' || message.user?.username === 'dk' || message.user?._id === 'dk-bot';
-      const isChaiWalaMessage = message.type === 'chaiwala_bot' || message.user?.username === 'ChaiWala' || message.user?._id === 'chaiwala-bot';
-      const isOwnMessage = !isAIMessage && !isDKMessage && !isChaiWalaMessage && user && (messageUserId === user._id || messageUserId?.toString() === user._id?.toString());
+      const isOwnMessage = !isAIMessage && !isDKMessage && user && (messageUserId === user._id || messageUserId?.toString() === user._id?.toString());
       
       const userObj = typeof message.user === 'object' ? message.user : { username: 'User', avatar: null };
       let messageUser = userObj;
       if (isDKMessage && !userObj.avatar) {
         messageUser = { ...userObj, avatar: '/avatars/dk-avatar.png' };
-      } else if (isChaiWalaMessage && !userObj.avatar) {
-        messageUser = { ...userObj, avatar: '/avatars/chaiwala-avatar.png' };
       }
       
       return {
@@ -772,7 +741,6 @@ export default function ChatRoom() {
           messageUserId,
           isAIMessage,
           isDKMessage,
-          isChaiWalaMessage,
           isOwnMessage,
           messageUser
         }
@@ -1742,7 +1710,15 @@ export default function ChatRoom() {
                 <p className="text-sm text-gray-500 mt-1">{room.project.name}</p>
               )}
               {!room?.project && !room?.repository && (
-                <p className="text-sm text-green-600 mt-1 font-medium">Personal Chatroom</p>
+                <p className="text-sm text-gray-500 mt-1">Personal chatroom - no repository linked</p>
+              )}
+              {room?.project && !room.project.githubRepo && !room?.repository && (
+                <p className="text-sm text-yellow-600 mt-1">⚠️ Project has no GitHub repository linked</p>
+              )}
+              {((room?.project && room.project.githubRepo) || room?.repository) && (
+                <p className="text-sm text-green-600 mt-1">
+                  ✓ Repository: {room.project?.githubRepo?.fullName || room.repository}
+                </p>
               )}
             </div>
             <button
@@ -2019,7 +1995,7 @@ export default function ChatRoom() {
                   }
                 }, 1000);
               }
-            }, 150);
+            }, 200); // Increased throttle from 150ms to 200ms for better performance
           }}
         >
           {/* Search Results */}
@@ -2064,7 +2040,7 @@ export default function ChatRoom() {
           )}
           {messagesWithMetadata.map((message) => {
             // Use pre-computed metadata
-            const { messageUserId, isAIMessage, isDKMessage, isChaiWalaMessage, isOwnMessage, messageUser } = message._metadata;
+            const { messageUserId, isAIMessage, isDKMessage, isOwnMessage, messageUser } = message._metadata;
             
             return (
             <div
@@ -2088,12 +2064,6 @@ export default function ChatRoom() {
                       alt="DK Bot"
                       className="w-10 h-10 rounded-full object-cover border-2 border-green-200"
                     />
-                  ) : isChaiWalaMessage ? (
-                    <img
-                      src={messageUser.avatar || '/avatars/chaiwala-avatar.png'}
-                      alt="ChaiWala Bot"
-                      className="w-10 h-10 rounded-full object-cover border-2 border-orange-200"
-                    />
                   ) : (
                     <img
                       src={
@@ -2112,8 +2082,6 @@ export default function ChatRoom() {
                     ? 'bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 text-gray-900'
                     : isDKMessage
                     ? 'bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 text-gray-900'
-                    : isChaiWalaMessage
-                    ? 'bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-200 text-gray-900'
                     : isOwnMessage
                     ? 'bg-primary-600 text-white'
                     : 'bg-white text-gray-900 border border-gray-200'
@@ -2280,14 +2248,6 @@ export default function ChatRoom() {
                       </div>
                     </div>
                   </div>
-                ) : message.type === 'chaiwala_bot' ? (
-                  <div className="space-y-3">
-                    <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
-                      <div className="prose prose-sm max-w-none">
-                        {renderMarkdown(message.content)}
-                      </div>
-                    </div>
-                  </div>
                 ) : message.type === 'ai_code' && message.aiResponse ? (
                   <div className="space-y-3">
                     {/* Show explanation first if it exists */}
@@ -2323,7 +2283,7 @@ export default function ChatRoom() {
                             >
                               Copy
                             </button>
-                            {room?.project && (
+                            {((room?.project && room.project.githubRepo) || room?.repository) && (
                               <button
                                 onClick={() => {
                                   setShowCommitModal(message._id);
@@ -3242,6 +3202,12 @@ export default function ChatRoom() {
           try {
             const content = message.aiResponse.code || message.aiResponse.explanation || message.content;
             
+            if (!content || !content.trim()) {
+              setCommitError('No content to commit. The AI response is empty.');
+              setCommitting(false);
+              return;
+            }
+            
             const response = await apiClient.post(`/api/chat/room/${roomId}/commit-file`, {
               filePath: commitFilePath.trim(),
               content: content,
@@ -3252,6 +3218,14 @@ export default function ChatRoom() {
             
             if (response.data.success) {
               setCommitSuccess(true);
+              setCommitError(null);
+              
+              // Show success notification
+              if (response.data.fileUrl) {
+                logger.log('✅ File committed successfully:', response.data.fileUrl);
+              }
+              
+              // Close modal after 3 seconds
               setTimeout(() => {
                 setShowCommitModal(null);
                 setCommitFilePath('');
@@ -3259,11 +3233,26 @@ export default function ChatRoom() {
                 setFileExists(false);
                 setCommitError(null);
                 setCommitSuccess(false);
-              }, 2000);
+              }, 3000);
             }
           } catch (error) {
             logger.error('Error committing file:', error);
-            setCommitError(error.response?.data?.error || 'Failed to commit file to repository');
+            let errorMessage = error.response?.data?.error || error.message || 'Failed to commit file to repository';
+            
+            // Provide helpful error messages
+            if (error.response?.status === 400) {
+              if (errorMessage.includes('GitHub token')) {
+                errorMessage = 'GitHub token not available. Please reconnect your GitHub account in settings.';
+              } else if (errorMessage.includes('not associated with a GitHub repository')) {
+                errorMessage = 'This chatroom is not linked to a GitHub repository. Only project chatrooms with linked repositories can commit files.';
+              }
+            } else if (error.response?.status === 403) {
+              errorMessage = 'You do not have permission to commit to this repository.';
+            } else if (error.response?.status === 404) {
+              errorMessage = 'Repository not found. Please check if the repository exists and you have access.';
+            }
+            
+            setCommitError(errorMessage);
           } finally {
             setCommitting(false);
           }
