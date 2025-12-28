@@ -10,7 +10,8 @@ export async function getRepositoryTree(repoFullName, githubToken, branch = 'mai
       const repoResponse = await axios.get(
         `https://api.github.com/repos/${repoFullName}`,
         {
-          headers: { Authorization: `token ${githubToken}` }
+          headers: { Authorization: `token ${githubToken}` },
+          timeout: 10000 // 10 second timeout
         }
       );
       branch = repoResponse.data.default_branch || 'main';
@@ -21,7 +22,8 @@ export async function getRepositoryTree(repoFullName, githubToken, branch = 'mai
     const branchResponse = await axios.get(
       `https://api.github.com/repos/${repoFullName}/git/refs/heads/${branch}`,
       {
-        headers: { Authorization: `token ${githubToken}` }
+        headers: { Authorization: `token ${githubToken}` },
+        timeout: 10000 // 10 second timeout
       }
     );
 
@@ -31,7 +33,8 @@ export async function getRepositoryTree(repoFullName, githubToken, branch = 'mai
     const treeResponse = await axios.get(
       `https://api.github.com/repos/${repoFullName}/git/trees/${treeSha}?recursive=1`,
       {
-        headers: { Authorization: `token ${githubToken}` }
+        headers: { Authorization: `token ${githubToken}` },
+        timeout: 15000 // 15 second timeout for large trees
       }
     );
 
@@ -41,6 +44,13 @@ export async function getRepositoryTree(repoFullName, githubToken, branch = 'mai
       truncated: treeResponse.data.truncated
     };
   } catch (error) {
+    if (error.response?.status === 404) {
+      throw new Error(`Repository not found: ${repoFullName}. Please check the repository name and access permissions.`);
+    } else if (error.response?.status === 403) {
+      throw new Error(`Access denied to repository: ${repoFullName}. Please check your GitHub token permissions.`);
+    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      throw new Error(`Request timeout while fetching repository tree. The repository may be too large.`);
+    }
     console.error('Error fetching repository tree:', error.message);
     throw new Error(`Failed to fetch repository tree: ${error.message}`);
   }
@@ -55,7 +65,8 @@ export async function getFileContent(repoFullName, filePath, githubToken, branch
       `https://api.github.com/repos/${repoFullName}/contents/${filePath}`,
       {
         headers: { Authorization: `token ${githubToken}` },
-        params: { ref: branch }
+        params: { ref: branch },
+        timeout: 8000 // 8 second timeout per file
       }
     );
 
@@ -74,6 +85,13 @@ export async function getFileContent(repoFullName, filePath, githubToken, branch
       sha: response.data.sha
     };
   } catch (error) {
+    if (error.response?.status === 404) {
+      throw new Error(`File not found: ${filePath}`);
+    } else if (error.response?.status === 403) {
+      throw new Error(`Access denied to file: ${filePath}`);
+    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      throw new Error(`Request timeout while fetching file: ${filePath}`);
+    }
     console.error(`Error fetching file ${filePath}:`, error.message);
     throw new Error(`Failed to fetch file: ${error.message}`);
   }
@@ -149,23 +167,47 @@ export async function getRepositoryContext(repoFullName, githubToken, maxFiles =
     const repoResponse = await axios.get(
       `https://api.github.com/repos/${repoFullName}`,
       {
-        headers: { Authorization: `token ${githubToken}` }
+        headers: { Authorization: `token ${githubToken}` },
+        timeout: 10000 // 10 second timeout
       }
     );
 
     const repo = repoResponse.data;
 
+    // Get languages (with timeout and error handling)
+    let languages = {};
+    try {
+      if (repo.languages_url) {
+        languages = await Promise.race([
+          getLanguages(repoFullName, githubToken),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Languages fetch timeout')), 5000)
+          )
+        ]).catch(() => ({})); // Return empty object on timeout/error
+      }
+    } catch (langError) {
+      console.log('⚠️ Could not fetch languages:', langError.message);
+      // Continue without languages - not critical
+    }
+
     return {
       name: repo.name,
       description: repo.description,
       language: repo.language,
-      languages: repo.languages_url ? await getLanguages(repoFullName, githubToken) : {},
+      languages: languages,
       branch: tree.branch,
       fileCount: relevantFiles.length,
       files: fileContents,
       structure: relevantFiles.map(f => f.path)
     };
   } catch (error) {
+    if (error.response?.status === 404) {
+      throw new Error(`Repository not found: ${repoFullName}`);
+    } else if (error.response?.status === 403) {
+      throw new Error(`Access denied to repository: ${repoFullName}. Please check your GitHub token.`);
+    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      throw new Error(`Request timeout while fetching repository context. The repository may be too large.`);
+    }
     console.error('Error getting repository context:', error.message);
     throw error;
   }
@@ -179,11 +221,13 @@ async function getLanguages(repoFullName, githubToken) {
     const response = await axios.get(
       `https://api.github.com/repos/${repoFullName}/languages`,
       {
-        headers: { Authorization: `token ${githubToken}` }
+        headers: { Authorization: `token ${githubToken}` },
+        timeout: 5000 // 5 second timeout
       }
     );
     return response.data;
   } catch (error) {
+    // Return empty object on any error - not critical
     return {};
   }
 }
