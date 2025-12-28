@@ -17,8 +17,9 @@ export async function getRepositoryTree(repoFullName, githubToken, branch = 'mai
     }
 
     // Get the tree SHA for the branch
+    // GitHub API uses "refs" (plural) in the path – the singular variant 404s
     const branchResponse = await axios.get(
-      `https://api.github.com/repos/${repoFullName}/git/ref/heads/${branch}`,
+      `https://api.github.com/repos/${repoFullName}/git/refs/heads/${branch}`,
       {
         headers: { Authorization: `token ${githubToken}` }
       }
