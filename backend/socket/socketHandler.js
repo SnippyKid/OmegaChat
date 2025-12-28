@@ -239,19 +239,52 @@ export function setupSocketIO(io) {
         await room.save();
         
         // Get the last message directly - more efficient than loading all messages
-        const updatedRoom = await ChatRoom.findById(roomId)
-          .select('messages')
-          .populate({
-            path: 'messages',
-            options: { sort: { createdAt: -1 }, limit: 1 },
-            populate: [
-              { path: 'user', select: 'username avatar' },
-              { path: 'reactions.users', select: 'username avatar' },
-              { path: 'starredBy', select: 'username avatar' }
-            ]
-          });
+        const savedMessage = room.messages[room.messages.length - 1];
+        if (!savedMessage) {
+          return socket.emit('error', { message: 'Failed to save message' });
+        }
         
-        const savedMessage = updatedRoom.messages[0]; // First one is the newest
+        // Populate user and reactions manually
+        const User = (await import('../models/User.js')).default;
+        const messageObj = savedMessage.toObject();
+        
+        // Populate message user
+        if (messageObj.user) {
+          const user = await User.findById(messageObj.user).select('username avatar').lean();
+          messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+        }
+        
+        // Populate reaction users
+        if (messageObj.reactions && messageObj.reactions.length > 0) {
+          const reactionUserIds = messageObj.reactions.flatMap(r => r.users || []);
+          if (reactionUserIds.length > 0) {
+            const reactionUsers = await User.find({ _id: { $in: reactionUserIds } })
+              .select('username avatar')
+              .lean();
+            const userMap = new Map(reactionUsers.map(u => [u._id.toString(), u]));
+            messageObj.reactions = messageObj.reactions.map(reaction => ({
+              ...reaction,
+              users: (reaction.users || []).map(userId => {
+                const userIdStr = userId.toString();
+                return userMap.get(userIdStr) || { _id: userId, username: 'User', avatar: null };
+              })
+            }));
+          }
+        }
+        
+        // Populate starredBy
+        if (messageObj.starredBy && messageObj.starredBy.length > 0) {
+          const starredUsers = await User.find({ _id: { $in: messageObj.starredBy } })
+            .select('username avatar')
+            .lean();
+          const userMap = new Map(starredUsers.map(u => [u._id.toString(), u]));
+          messageObj.starredBy = messageObj.starredBy.map(userId => {
+            const userIdStr = userId.toString();
+            return userMap.get(userIdStr) || { _id: userId, username: 'User', avatar: null };
+          });
+        }
+        
+        const savedMessagePopulated = messageObj;
         
         // Ensure arrays are initialized
         if (!savedMessage.reactions) savedMessage.reactions = [];
@@ -287,8 +320,15 @@ export function setupSocketIO(io) {
       try {
         const { roomId, prompt, context } = data;
         
-        const room = await ChatRoom.findById(roomId);
+        // Emit typing indicator IMMEDIATELY before any async operations
+        // This ensures users see "Omega is thinking" right away
+        io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
+        
+        // Use select to only fetch needed fields for better performance
+        const room = await ChatRoom.findById(roomId)
+          .select('members project repository messages');
         if (!room) {
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           return socket.emit('error', { message: 'Room not found' });
         }
         
@@ -297,11 +337,9 @@ export function setupSocketIO(io) {
         );
         
         if (!isMember) {
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           return socket.emit('error', { message: 'Not a member of this room' });
         }
-        
-        // Emit typing indicator to all users (including sender)
-        io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
         
         // Generate AI response - optimized with timeout
         console.log(`🤖 Generating AI code for: ${prompt.substring(0, 50)}...`);
@@ -315,13 +353,13 @@ export function setupSocketIO(io) {
               const user = await User.findById(socket.userId);
               if (user && user.githubToken) {
                 console.log('📂 Fetching repository context...');
-                // Add timeout to prevent long delays (3 seconds max)
+                // Add timeout to prevent long delays (2 seconds max - reduced for faster response)
                 const contextPromise = getRepositoryContext(
                   project.githubRepo.fullName,
                   user.githubToken
                 );
                 const timeoutPromise = new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error('Context fetch timeout')), 3000)
+                  setTimeout(() => reject(new Error('Context fetch timeout')), 2000)
                 );
                 
                 const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
@@ -360,13 +398,13 @@ Key File Contents:`;
             const user = await User.findById(socket.userId);
             if (user && user.githubToken) {
               console.log('📂 Fetching repository context from room repository...');
-              // Add timeout to prevent long delays (3 seconds max)
+              // Add timeout to prevent long delays (2 seconds max - reduced for faster response)
               const contextPromise = getRepositoryContext(
                 room.repository,
                 user.githubToken
               );
               const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Context fetch timeout')), 3000)
+                setTimeout(() => reject(new Error('Context fetch timeout')), 2000)
               );
               
               const repoInfo = await Promise.race([contextPromise, timeoutPromise]);
@@ -408,12 +446,21 @@ Key File Contents:`;
         // Combine user context with repository context
         const fullContext = repoContext ? `${repoContext}\n\n${context || ''}`.trim() : context;
         
-        // Generate code using AI
+        // Generate code using AI with timeout to prevent hanging
         let aiResponse;
         try {
           console.log('🚀 Starting AI generation...');
-          aiResponse = await generateCodeSnippet(prompt, fullContext);
-          console.log('✅ AI code generated successfully');
+          const startTime = Date.now();
+          
+          // Add timeout wrapper for AI generation (25 seconds max)
+          const aiGenerationPromise = generateCodeSnippet(prompt, fullContext);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('AI generation timeout after 25 seconds')), 25000)
+          );
+          
+          aiResponse = await Promise.race([aiGenerationPromise, timeoutPromise]);
+          const generationTime = Date.now() - startTime;
+          console.log(`✅ AI code generated successfully in ${generationTime}ms`);
           console.log('📊 Response summary:', {
             codeLength: aiResponse.code?.length || 0,
             language: aiResponse.language,
@@ -441,7 +488,7 @@ Key File Contents:`;
           const savedError = updatedRoom.messages[updatedRoom.messages.length - 1];
           
           io.to(`room:${roomId}`).emit('new_message', {
-            message: savedError,
+            message: savedErrorPopulated,
             roomId
           });
           
@@ -550,15 +597,23 @@ Key File Contents:`;
         room.lastMessage = new Date();
         await room.save();
         
-        // Reload room to get the saved message with _id and timestamps
-        const updatedRoom = await ChatRoom.findById(roomId)
-          .populate('messages.user', 'username avatar');
+        // Optimize: Get the last message directly instead of loading all messages
+        const savedMessage = room.messages[room.messages.length - 1];
+        if (!savedMessage) {
+          return socket.emit('error', { message: 'Failed to save voice message' });
+        }
         
-        const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+        // Populate user manually
+        const User = (await import('../models/User.js')).default;
+        const messageObj = savedMessage.toObject();
+        if (messageObj.user) {
+          const user = await User.findById(messageObj.user).select('username avatar').lean();
+          messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+        }
         
         // Emit voice message to all users in the room
         io.to(`room:${roomId}`).emit('new_message', {
-          message: savedMessage,
+          message: messageObj,
           roomId
         });
         
@@ -741,7 +796,7 @@ Key File Contents:`;
         const updatedMessage = updatedRoom.messages.id(messageId);
         
         io.to(`room:${roomId}`).emit('message_edited', {
-          message: updatedMessage,
+          message: updatedMessagePopulated,
           roomId
         });
       } catch (error) {
@@ -835,7 +890,7 @@ Key File Contents:`;
         const updatedMessage = updatedRoom.messages.id(messageId);
         
         io.to(`room:${roomId}`).emit('reaction_updated', {
-          message: updatedMessage,
+          message: updatedMessagePopulated,
           roomId
         });
       } catch (error) {

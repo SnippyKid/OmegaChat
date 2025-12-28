@@ -657,12 +657,21 @@ router.patch('/room/:roomId/message/:messageId', authenticateToken, async (req, 
     
     await room.save();
     
-    const updatedRoom = await ChatRoom.findById(roomId)
-      .populate('messages.user', 'username avatar');
+    // Optimize: Only get the specific message instead of loading all messages
+    const updatedMessage = room.messages.id(messageId);
+    if (!updatedMessage) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
     
-    const updatedMessage = updatedRoom.messages.id(messageId);
+    // Populate user for just this message
+    const User = (await import('../models/User.js')).default;
+    const messageObj = updatedMessage.toObject();
+    if (messageObj.user) {
+      const user = await User.findById(messageObj.user).select('username avatar').lean();
+      messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+    }
     
-    res.json({ success: true, message: updatedMessage });
+    res.json({ success: true, message: messageObj });
   } catch (error) {
     console.error('Error editing message:', error);
     res.status(500).json({ error: 'Failed to edit message' });
@@ -772,13 +781,41 @@ router.post('/room/:roomId/message/:messageId/reaction', authenticateToken, asyn
     
     await room.save();
     
-    const updatedRoom = await ChatRoom.findById(roomId)
-      .populate('messages.user', 'username avatar')
-      .populate('messages.reactions.users', 'username avatar');
+    // Optimize: Get the message directly from room instead of reloading all messages
+    const updatedMessage = room.messages.id(messageId);
+    if (!updatedMessage) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
     
-    const updatedMessage = updatedRoom.messages.id(messageId);
+    // Populate user and reaction users manually
+    const User = (await import('../models/User.js')).default;
+    const messageObj = updatedMessage.toObject();
     
-    res.json({ success: true, message: updatedMessage });
+    // Populate message user
+    if (messageObj.user) {
+      const user = await User.findById(messageObj.user).select('username avatar').lean();
+      messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+    }
+    
+    // Populate reaction users
+    if (messageObj.reactions && messageObj.reactions.length > 0) {
+      const reactionUserIds = messageObj.reactions.flatMap(r => r.users || []);
+      if (reactionUserIds.length > 0) {
+        const reactionUsers = await User.find({ _id: { $in: reactionUserIds } })
+          .select('username avatar')
+          .lean();
+        const userMap = new Map(reactionUsers.map(u => [u._id.toString(), u]));
+        messageObj.reactions = messageObj.reactions.map(reaction => ({
+          ...reaction,
+          users: (reaction.users || []).map(userId => {
+            const userIdStr = userId.toString();
+            return userMap.get(userIdStr) || { _id: userId, username: 'User', avatar: null };
+          })
+        }));
+      }
+    }
+    
+    res.json({ success: true, message: messageObj });
   } catch (error) {
     console.error('Error adding reaction:', error);
     res.status(500).json({ error: 'Failed to add reaction' });
@@ -1089,12 +1126,21 @@ router.post('/room/:roomId/message/:messageId/forward', authenticateToken, async
     targetRoom.lastMessage = new Date();
     await targetRoom.save();
     
-    const updatedTargetRoom = await ChatRoom.findById(targetRoomId)
-      .populate('messages.user', 'username avatar');
+    // Optimize: Get the last message directly instead of loading all messages
+    const newMessage = targetRoom.messages[targetRoom.messages.length - 1];
+    if (!newMessage) {
+      return res.status(500).json({ error: 'Failed to forward message' });
+    }
     
-    const newMessage = updatedTargetRoom.messages[updatedTargetRoom.messages.length - 1];
+    // Populate user manually
+    const User = (await import('../models/User.js')).default;
+    const messageObj = newMessage.toObject();
+    if (messageObj.user) {
+      const user = await User.findById(messageObj.user).select('username avatar').lean();
+      messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+    }
     
-    res.json({ success: true, message: newMessage });
+    res.json({ success: true, message: messageObj });
   } catch (error) {
     console.error('Error forwarding message:', error);
     res.status(500).json({ error: 'Failed to forward message' });
@@ -1155,12 +1201,21 @@ router.post('/room/:roomId/upload', authenticateToken, upload.single('file'), as
     room.lastMessage = new Date();
     await room.save();
     
-    const updatedRoom = await ChatRoom.findById(roomId)
-      .populate('messages.user', 'username avatar');
+    // Optimize: Get the last message directly instead of loading all messages
+    const savedMessage = room.messages[room.messages.length - 1];
+    if (!savedMessage) {
+      return res.status(500).json({ error: 'Failed to save message' });
+    }
     
-    const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
+    // Populate user manually
+    const User = (await import('../models/User.js')).default;
+    const messageObj = savedMessage.toObject();
+    if (messageObj.user) {
+      const user = await User.findById(messageObj.user).select('username avatar').lean();
+      messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+    }
     
-    res.json({ success: true, message: savedMessage });
+    res.json({ success: true, message: messageObj });
   } catch (error) {
     console.error('Error uploading file:', error);
     if (req.file && req.file.path) {
@@ -1410,11 +1465,14 @@ router.post('/github/webhook', async (req, res) => {
       room.lastMessage = new Date();
       await room.save();
       
-      const updatedRoom = await ChatRoom.findById(room._id)
-        .populate('messages.user', 'username avatar');
+      // Optimize: Get the last message directly instead of loading all messages
+      const savedMessage = room.messages[room.messages.length - 1];
+      if (!savedMessage) {
+        continue; // Skip if message wasn't saved
+      }
       
-      const savedMessage = updatedRoom.messages[updatedRoom.messages.length - 1];
-      savedMessage.user = {
+      const messageObj = savedMessage.toObject();
+      messageObj.user = {
         _id: 'dk-bot',
         username: 'DK',
         avatar: '/avatars/dk-avatar.png'

@@ -1119,12 +1119,16 @@ export default function ChatRoom() {
     if (normalizedContent.startsWith('@omega')) {
       isAIMessage = true;
       aiPrompt = messageContent.substring(7).trim();
+      // Show typing indicator IMMEDIATELY when @omega is detected
+      setIsTyping(true);
     } else if (normalizedContent.startsWith('hey omega')) {
       isAIMessage = true;
       // Replace "Hey Omega" with "@omega" for display, extract prompt
       const promptPart = messageContent.substring(9).trim(); // Remove "hey omega"
       messageContent = '@omega ' + promptPart;
       aiPrompt = promptPart;
+      // Show typing indicator IMMEDIATELY when "hey omega" is detected
+      setIsTyping(true);
     } else if (normalizedContent.startsWith('@dk') || normalizedContent.startsWith('/dk')) {
       // Only allow @dk command if room has GitHub repository
       const hasGitHubRepo = room?.project?.githubRepo || room?.repository;

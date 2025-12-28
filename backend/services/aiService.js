@@ -78,45 +78,72 @@ export async function generateCodeSnippet(prompt, context = '') {
       
       let lastError = null;
       
-      // Try models in order of preference
-      for (const modelName of preferredModels) {
+      // Try models in order of preference - use Promise.race for faster selection
+      const modelTests = preferredModels.map(async (modelName) => {
         try {
           const testModel = genAI.getGenerativeModel({ model: modelName });
-          // Quick test with minimal prompt
-          const testResult = await testModel.generateContent('Hi');
+          // Quick test with minimal prompt - add timeout (2 seconds max per model)
+          const testPromise = testModel.generateContent('Hi');
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Model test timeout')), 2000)
+          );
+          
+          const testResult = await Promise.race([testPromise, timeoutPromise]);
           const testResponse = testResult.response.text();
           
-          // Model works! Cache it for future use
-          model = testModel;
-          successfulModel = modelName;
-          cachedWorkingModel = modelName;
+          return { model: testModel, modelName, success: true };
+        } catch (e) {
+          return { model: null, modelName, success: false, error: e };
+        }
+      });
+      
+      // Wait for first successful model (or all to fail)
+      const results = await Promise.allSettled(modelTests);
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.success) {
+          model = result.value.model;
+          successfulModel = result.value.modelName;
+          cachedWorkingModel = result.value.modelName;
           modelCacheTime = now;
           break;
-        } catch (e) {
-          lastError = e;
-          // Continue to next model
+        } else if (result.status === 'fulfilled' && !result.value.success) {
+          lastError = result.value.error;
         }
       }
       
       if (!model) {
-        // If preferred models fail, try listing from API (slower)
-        const availableModels = await listAvailableModels(apiKey.trim());
-        if (availableModels.length > 0) {
-          for (const modelName of availableModels) {
+        // If preferred models fail, try listing from API (slower) - but skip if we already tried
+        // This is a fallback, so we'll try it but with timeout
+        try {
+          const availableModels = await Promise.race([
+            listAvailableModels(apiKey.trim()),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Model list timeout')), 3000))
+          ]);
+          
+          if (availableModels.length > 0) {
+            // Try first available model only (fastest)
+            const modelName = availableModels[0];
             try {
               const testModel = genAI.getGenerativeModel({ model: modelName });
-              const testResult = await testModel.generateContent('Hi');
+              const testPromise = testModel.generateContent('Hi');
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Model test timeout')), 2000)
+              );
+              const testResult = await Promise.race([testPromise, timeoutPromise]);
               testResult.response.text();
               
               model = testModel;
               successfulModel = modelName;
               cachedWorkingModel = modelName;
               modelCacheTime = now;
-              break;
             } catch (e) {
               lastError = e;
+              console.log(`⚠️ Model ${modelName} from API list failed:`, e.message?.substring(0, 100));
             }
           }
+        } catch (listError) {
+          console.log('⚠️ Could not list models from API:', listError.message);
+          // Continue with error handling below
         }
         
         if (!model) {
@@ -141,7 +168,15 @@ Last error: ${lastError?.message || 'Unknown error'}`;
       }
     }
 
-    const systemInstruction = `You are Omega, an AI code assistant. Your responses must follow this EXACT format:
+    const systemInstruction = `You are Omega, an AI code assistant. 
+
+**IMPORTANT: Understand the user's intent first!**
+
+- If the user is just greeting you (hi, hello, hey, etc.), respond naturally and conversationally. Do NOT generate code.
+- If the user asks a question or needs help, respond conversationally first, then offer to help with code if relevant.
+- Only generate code when the user explicitly asks for code, a function, a solution, or something technical.
+
+**When generating code, follow this format:**
 
 1. **Explanation Section** (First):
    - Start with a clear, concise explanation of what the user is asking for
@@ -151,18 +186,18 @@ Last error: ${lastError?.message || 'Unknown error'}`;
 2. **Solution Section** (After explanation):
    - Provide the actual code solution
    - Use clean, well-commented code following best practices
-   - If multiple solutions exist, provide the best one first
    - Format code in markdown code blocks with language identifier
 
-**Response Format:**
+**Response Format (ONLY when code is needed):**
 [Your explanation here - what the problem is and how we'll solve it]
 
 \`\`\`[language]
 [Your code solution here]
 \`\`\`
 
-**Important Rules:**
-- Always start with explanation, then provide code
+**Rules:**
+- Be friendly and conversational for greetings and questions
+- Only generate code when explicitly requested
 - Keep explanations simple and brief
 - Code should be production-ready and well-commented
 - If user asks for a specific language/framework, use that
@@ -179,9 +214,13 @@ Last error: ${lastError?.message || 'Unknown error'}`;
     let response;
     
     try {
-      // Generate content with optimized settings for faster response
-      // Use simpler API call for better performance
+      // Generate content - ensure model is valid
+      if (!model) {
+        throw new Error('No valid model found. Please check your API key and model availability.');
+      }
+      
       result = await model.generateContent(fullPrompt);
+      // text() is synchronous in Google Generative AI SDK
       response = result.response.text();
     } catch (apiError) {
       console.error('❌ Gemini API call failed:', apiError);
