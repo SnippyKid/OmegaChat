@@ -1120,7 +1120,7 @@ export default function Dashboard() {
         )}
 
         {/* Personal Chatrooms Section */}
-        <div className="mb-8">
+        <div className="mt-12 mb-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
               Personal Chatrooms
