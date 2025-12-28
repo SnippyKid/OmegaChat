@@ -64,8 +64,8 @@ router.get('/room/:roomId/messages', authenticateToken, async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100); // Clamp between 1-100
     const skip = Math.max(parseInt(req.query.skip) || 0, 0); // Ensure non-negative
     
-    // Use lean() for better performance - we'll populate manually
-    const room = await ChatRoom.findById(roomId).lean();
+    // Fetch room as Mongoose document (not lean) so we can use save() if needed
+    const room = await ChatRoom.findById(roomId);
     
     if (!room) {
       return res.status(404).json({ 
@@ -268,8 +268,8 @@ router.get('/room/:roomId', authenticateToken, async (req, res) => {
       });
     }
 
-    // First fetch without populate to check membership with ObjectIds - use lean() for performance
-    const room = await ChatRoom.findById(req.params.roomId).lean();
+    // Fetch room as Mongoose document (not lean) so we can use populate and save
+    const room = await ChatRoom.findById(req.params.roomId);
     
     if (!room) {
       return res.status(404).json({ 
