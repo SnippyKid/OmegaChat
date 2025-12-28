@@ -58,19 +58,25 @@ export async function generateCodeSnippet(prompt, context = '') {
     // Initialize GoogleGenerativeAI with the API key
     const genAI = new GoogleGenerativeAI(apiKey.trim());
 
-    // Preferred model (free/fast): default to gemini-1.5-flash if not explicitly set
-    const preferredModel = process.env.GEMINI_MODEL?.trim() || 'gemini-1.5-flash';
+    // Preferred model: use env override, else pick a known available model from your list
+    // From your account's ListModels: gemini-2.5-flash is available and supports generateContent
+    const preferredModel = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 
     // Pick the fastest available model without doing multiple probe calls.
-    // Order: explicit/env (or default flash) -> cached working -> flash -> flash-002 -> pro fallbacks.
+    // Order: explicit/env (or default 2.5 flash) -> cached working -> 2.5 flash -> flash-latest -> flash-001/002 -> pro fallbacks -> other flash variants.
     const now = Date.now();
     const modelCandidates = [
       preferredModel,
       (cachedWorkingModel && (now - modelCacheTime) < MODEL_CACHE_DURATION) ? cachedWorkingModel : null,
+      'gemini-2.5-flash',
+      'gemini-flash-latest',
       'gemini-1.5-flash',
       'gemini-1.5-flash-002',
       'gemini-1.5-pro',
-      'gemini-pro'
+      'gemini-pro',
+      'gemini-2.0-flash',
+      'gemini-2.0-flash-001',
+      'gemini-2.0-flash-lite'
     ].filter(Boolean);
 
     const uniqueCandidates = [...new Set(modelCandidates)];
