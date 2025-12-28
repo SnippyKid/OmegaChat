@@ -679,13 +679,16 @@ export default function Dashboard() {
       <header className="bg-gradient-to-r from-green-600 to-emerald-600 shadow-lg border-b border-green-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg border border-white/30">
-                Ω
+            <div className="flex items-center gap-4">
+              <div className="relative">
+                <div className="w-14 h-14 bg-gradient-to-br from-emerald-400 to-green-600 rounded-2xl flex items-center justify-center shadow-xl border-2 border-white/40 transform hover:scale-105 transition-transform">
+                  <span className="logo-font text-white text-3xl font-black tracking-wider">Ω</span>
+                </div>
+                <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full border-2 border-white animate-pulse"></div>
               </div>
               <div>
-                <h1 className="text-xl font-bold text-white">Omega Chat</h1>
-                <p className="text-sm text-white/90 font-medium">{user?.username}</p>
+                <h1 className="logo-font text-3xl font-black text-white tracking-wide drop-shadow-lg">OMEGA</h1>
+                <p className="text-sm text-emerald-100 font-medium tracking-wide">@{user?.username}</p>
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -898,7 +901,7 @@ export default function Dashboard() {
               return (
                 <div
                   key={project._id}
-                  className={`bg-gradient-to-br from-white to-green-50 rounded-2xl shadow-lg hover:shadow-xl transition-all p-6 border-2 border-green-200 hover:border-green-400 relative group ${
+                  className={`bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 p-6 border-2 border-gray-100 hover:border-emerald-400 relative group ${
                     (project?.chatRoom?._id || project?.chatRoom) ? 'cursor-pointer' : 'cursor-not-allowed opacity-80'
                   }`}
                 >

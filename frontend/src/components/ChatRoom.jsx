@@ -1711,20 +1711,20 @@ export default function ChatRoom() {
   }
 
   return (
-    <div className="flex h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100">
+    <div className="flex h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100">
       {/* Sidebar */}
-      <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
-        <div className="p-4 border-b border-gray-200">
+      <div className="w-72 bg-white border-r border-gray-200 flex flex-col shadow-sm">
+        <div className="p-5 border-b border-gray-200 bg-gradient-to-br from-emerald-50 to-green-50">
           <button
             onClick={() => navigate('/')}
-            className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4"
+            className="flex items-center gap-2 text-gray-600 hover:text-emerald-600 mb-4 font-medium transition-colors"
           >
             <ArrowLeft size={20} />
             Back to Dashboard
           </button>
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <h2 className="text-lg font-bold text-gray-900">
+              <h2 className="text-xl font-bold text-gray-900 tracking-tight">
                 {room?.name || 'Chat Room'}
               </h2>
               {room?.project && (
@@ -2098,13 +2098,13 @@ export default function ChatRoom() {
                 </div>
               )}
               <div
-                className={`max-w-2xl rounded-lg p-4 group relative ${
+                className={`max-w-2xl rounded-xl p-4 group relative shadow-sm ${
                   isAIMessage
-                    ? 'bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 text-gray-900'
+                    ? 'bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 text-gray-900'
                     : isDKMessage
-                    ? 'bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 text-gray-900'
+                    ? 'bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 text-gray-900'
                     : isOwnMessage
-                    ? 'bg-primary-600 text-white'
+                    ? 'bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-md'
                     : 'bg-white text-gray-900 border border-gray-200'
                 } ${message.deleted ? 'opacity-60' : ''} ${message.reactions && message.reactions.length > 0 ? 'pb-3' : ''}`}
                 onMouseEnter={() => {
@@ -2512,7 +2512,7 @@ export default function ChatRoom() {
         </div>
 
         {/* Input Area */}
-        <div className="border-t border-gray-200 bg-white p-4 shadow-sm">
+        <div className="border-t-2 border-gray-200 bg-gradient-to-r from-white to-gray-50 p-5 shadow-lg">
           {/* Reply Preview */}
           {replyToMessage && (
             <div className="mb-2 p-2 bg-gray-50 border-l-2 border-primary-600 rounded flex items-start justify-between">
