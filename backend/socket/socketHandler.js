@@ -620,10 +620,10 @@ Key File Contents:`;
           io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           
           // Also emit error to sender with proper error object
-          const errorMessage = error.message || 'Unknown error occurred';
+          const errorMsgText = error.message || 'Unknown error occurred';
           socket.emit('error', { 
-            message: `AI generation failed: ${errorMessage}`,
-            error: errorMessage,
+            message: `AI generation failed: ${errorMsgText}`,
+            error: errorMsgText,
             details: process.env.NODE_ENV === 'development' ? error.stack : undefined
           });
           
@@ -1116,14 +1116,41 @@ Key File Contents:`;
         
         await room.save();
         
-        const updatedRoom = await ChatRoom.findById(roomId)
-          .populate('messages.user', 'username avatar')
-          .populate('messages.reactions.users', 'username avatar');
+        // Get the updated message directly and populate manually for better performance
+        const updatedMessage = room.messages.id(messageId);
+        if (!updatedMessage) {
+          return socket.emit('error', { message: 'Message not found after reaction update' });
+        }
         
-        const updatedMessage = updatedRoom.messages.id(messageId);
+        const User = (await import('../models/User.js')).default;
+        const messageObj = updatedMessage.toObject();
+        
+        // Populate user
+        if (messageObj.user) {
+          const user = await User.findById(messageObj.user).select('username avatar').lean();
+          messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+        }
+        
+        // Populate reaction users
+        if (messageObj.reactions && messageObj.reactions.length > 0) {
+          const reactionUserIds = messageObj.reactions.flatMap(r => r.users || []);
+          if (reactionUserIds.length > 0) {
+            const reactionUsers = await User.find({ _id: { $in: reactionUserIds } })
+              .select('username avatar')
+              .lean();
+            const userMap = new Map(reactionUsers.map(u => [u._id.toString(), u]));
+            messageObj.reactions = messageObj.reactions.map(reaction => ({
+              ...reaction,
+              users: (reaction.users || []).map(userId => {
+                const userIdStr = userId.toString();
+                return userMap.get(userIdStr) || { _id: userId, username: 'User', avatar: null };
+              })
+            }));
+          }
+        }
         
         io.to(`room:${roomId}`).emit('reaction_updated', {
-          message: updatedMessagePopulated,
+          message: messageObj,
           roomId
         });
       } catch (error) {
