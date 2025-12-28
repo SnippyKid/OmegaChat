@@ -425,6 +425,7 @@ Key File Contents:`;
                   console.warn('⚠️ User does not have GitHub token. Repository context will not be available.');
                 }
               }
+            }
             } else {
               repoAccessInfo.error = 'Project not found';
               console.warn('⚠️ Project not found');
