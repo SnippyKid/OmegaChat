@@ -287,9 +287,9 @@ export function setupSocketIO(io) {
         const savedMessagePopulated = messageObj;
         
         // Ensure arrays are initialized
-        if (!savedMessage.reactions) savedMessage.reactions = [];
-        if (!savedMessage.readBy) savedMessage.readBy = [];
-        if (!savedMessage.starredBy) savedMessage.starredBy = [];
+        if (!savedMessagePopulated.reactions) savedMessagePopulated.reactions = [];
+        if (!savedMessagePopulated.readBy) savedMessagePopulated.readBy = [];
+        if (!savedMessagePopulated.starredBy) savedMessagePopulated.starredBy = [];
         
         // Emit to all users in the room (including sender)
         // Optimize: Use direct emit instead of fetchSockets for better performance
@@ -297,7 +297,7 @@ export function setupSocketIO(io) {
         
         // Emit without await to avoid blocking
         io.to(roomName).emit('new_message', {
-          message: savedMessage,
+          message: savedMessagePopulated,
           roomId
         });
         
@@ -482,13 +482,23 @@ Key File Contents:`;
           room.lastMessage = new Date();
           await room.save();
           
-          const updatedRoom = await ChatRoom.findById(roomId)
-            .populate('messages.user', 'username avatar');
+          // Optimize: Get the last message directly instead of loading all messages
+          const savedError = room.messages[room.messages.length - 1];
+          if (!savedError) {
+            io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+            return socket.emit('error', { message: 'Failed to save error message' });
+          }
           
-          const savedError = updatedRoom.messages[updatedRoom.messages.length - 1];
+          // Populate user manually
+          const User = (await import('../models/User.js')).default;
+          const messageObj = savedError.toObject();
+          if (messageObj.user) {
+            const user = await User.findById(messageObj.user).select('username avatar').lean();
+            messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+          }
           
           io.to(`room:${roomId}`).emit('new_message', {
-            message: savedErrorPopulated,
+            message: messageObj,
             roomId
           });
           
@@ -525,10 +535,30 @@ Key File Contents:`;
         // The message was just added, so it's the last one in the array
         const User = (await import('../models/User.js')).default;
         const lastMessage = room.messages[room.messages.length - 1];
-        const savedMessage = lastMessage.toObject ? lastMessage.toObject() : { ...lastMessage };
+        
+        // Properly convert subdocument to plain object with all nested properties
+        let savedMessage;
+        if (lastMessage && typeof lastMessage.toObject === 'function') {
+          savedMessage = lastMessage.toObject();
+        } else if (lastMessage) {
+          // Fallback: use JSON serialization to ensure all nested properties are included
+          savedMessage = JSON.parse(JSON.stringify(lastMessage));
+        } else {
+          throw new Error('Failed to get saved message');
+        }
+        
+        // Ensure aiResponse is properly included (it should be, but double-check)
+        if (savedMessage.type === 'ai_code' && !savedMessage.aiResponse) {
+          // Reconstruct from the original aiMessage if missing
+          savedMessage.aiResponse = {
+            code: aiResponse.code || null,
+            explanation: aiResponse.explanation || null,
+            language: aiResponse.language || null
+          };
+        }
         
         // Populate user manually for better performance
-        if (savedMessage.user && savedMessage.user.toString) {
+        if (savedMessage.user && typeof savedMessage.user.toString === 'function') {
           const userId = savedMessage.user.toString();
           const user = await User.findById(userId).select('username avatar').lean();
           savedMessage.user = user || { _id: userId, username: 'User', avatar: null };
@@ -543,12 +573,37 @@ Key File Contents:`;
           };
         }
         
+        // Validate message structure before emitting
+        if (!savedMessage || !savedMessage._id) {
+          console.error('❌ Invalid message structure:', savedMessage);
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+          return socket.emit('error', { message: 'Failed to create AI message' });
+        }
+        
+        // Ensure aiResponse exists for ai_code messages
+        if (savedMessage.type === 'ai_code' && !savedMessage.aiResponse) {
+          console.error('❌ AI message missing aiResponse:', savedMessage);
+          // Try to reconstruct from aiResponse variable
+          if (aiResponse) {
+            savedMessage.aiResponse = {
+              code: aiResponse.code || null,
+              explanation: aiResponse.explanation || null,
+              language: aiResponse.language || null
+            };
+          } else {
+            io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+            return socket.emit('error', { message: 'AI response data missing' });
+          }
+        }
+        
         // Emit AI response to all users in the room (including requester)
         console.log('📤 Emitting AI response to room:', roomId);
         console.log('📦 Message data:', {
           type: savedMessage.type,
           hasAiResponse: !!savedMessage.aiResponse,
-          codeLength: savedMessage.aiResponse?.code?.length || 0
+          codeLength: savedMessage.aiResponse?.code?.length || 0,
+          explanationLength: savedMessage.aiResponse?.explanation?.length || 0,
+          language: savedMessage.aiResponse?.language || 'none'
         });
         
         // Emit stop typing indicator first
@@ -560,10 +615,19 @@ Key File Contents:`;
           roomId
         });
         
-        console.log(`🤖 AI code generated and sent in room ${roomId} for ${socket.user.username}`);
+        console.log(`🤖 AI code generated and sent in room ${roomId} for ${socket.user?.username || 'unknown user'}`);
       } catch (error) {
-        console.error('Error generating AI code:', error);
-        socket.emit('error', { message: 'Failed to generate code' });
+        console.error('❌ Error generating AI code:', error);
+        console.error('Error stack:', error.stack);
+        
+        // Ensure typing indicator is stopped on any error
+        io.to(`room:${data?.roomId || 'unknown'}`).emit('ai_typing_stopped', { roomId: data?.roomId });
+        
+        // Send detailed error to client
+        socket.emit('error', { 
+          message: `Failed to generate code: ${error.message || 'Unknown error'}`,
+          details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
       }
     });
     
