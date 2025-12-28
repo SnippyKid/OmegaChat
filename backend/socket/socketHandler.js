@@ -317,24 +317,50 @@ export function setupSocketIO(io) {
     
     // Handle AI code generation (@omega trigger)
     socket.on('ai_generate_code', async (data) => {
+      const startTime = Date.now();
+      console.log('🔵 ========== AI GENERATION REQUEST RECEIVED ==========');
+      console.log('📥 Raw data received:', JSON.stringify(data, null, 2));
+      
       try {
         const { roomId, prompt, context } = data;
         
         // Validate input
         if (!roomId) {
           console.error('❌ AI generation: Missing roomId');
-          return socket.emit('error', { message: 'Room ID is required' });
+          const errorMsg = 'Room ID is required';
+          io.to(`room:${roomId || 'unknown'}`).emit('ai_typing_stopped', { roomId: roomId || 'unknown' });
+          socket.emit('error', { message: errorMsg });
+          return;
         }
         
         if (!prompt || !prompt.trim()) {
           console.error('❌ AI generation: Missing or empty prompt');
-          return socket.emit('error', { message: 'Prompt is required' });
+          const errorMsg = 'Prompt is required';
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+          socket.emit('error', { message: errorMsg });
+          return;
         }
         
-        console.log(`🤖 AI generation request received: roomId=${roomId}, prompt="${prompt.substring(0, 50)}..."`);
+        console.log(`🤖 AI generation request received:`);
+        console.log(`   - Room ID: ${roomId}`);
+        console.log(`   - Prompt: "${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}"`);
+        console.log(`   - User ID: ${socket.userId}`);
+        console.log(`   - Socket ID: ${socket.id}`);
+        
+        // Check API key first
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey || apiKey.trim() === '') {
+          const errorMsg = 'GEMINI_API_KEY is not set in environment variables';
+          console.error(`❌ ${errorMsg}`);
+          io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
+          socket.emit('error', { message: errorMsg });
+          return;
+        }
+        console.log(`✅ API Key found: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`);
         
         // Emit typing indicator IMMEDIATELY before any async operations
         // This ensures users see "Omega is thinking" right away
+        console.log(`📤 Emitting ai_typing to room:${roomId}`);
         io.to(`room:${roomId}`).emit('ai_typing', { roomId, userId: socket.userId });
         
         // Use select to only fetch needed fields for better performance
@@ -468,42 +494,54 @@ Key File Contents:`;
         // Generate code using AI with timeout to prevent hanging
         let aiResponse;
         try {
-          console.log('🚀 Starting AI generation...');
-          console.log('📝 Prompt:', cleanPrompt);
+          console.log('🚀 ========== STARTING AI GENERATION ==========');
+          console.log('📝 Clean Prompt:', cleanPrompt);
           console.log('📝 Context length:', fullContext?.length || 0);
-          const startTime = Date.now();
+          const aiStartTime = Date.now();
           
           // Add timeout wrapper for AI generation (25 seconds max)
+          console.log('⏳ Calling generateCodeSnippet...');
           const aiGenerationPromise = generateCodeSnippet(cleanPrompt, fullContext || '');
           const timeoutPromise = new Promise((_, reject) => 
             setTimeout(() => reject(new Error('AI generation timeout after 25 seconds')), 25000)
           );
           
+          console.log('⏳ Waiting for AI response (max 25 seconds)...');
           aiResponse = await Promise.race([aiGenerationPromise, timeoutPromise]);
-          const generationTime = Date.now() - startTime;
+          const generationTime = Date.now() - aiStartTime;
+          
           console.log(`✅ AI code generated successfully in ${generationTime}ms`);
           console.log('📊 Response summary:', {
             codeLength: aiResponse?.code?.length || 0,
             language: aiResponse?.language || 'none',
             explanationLength: aiResponse?.explanation?.length || 0,
             hasCode: !!aiResponse?.code,
-            hasExplanation: !!aiResponse?.explanation
+            hasExplanation: !!aiResponse?.explanation,
+            fullResponse: JSON.stringify(aiResponse, null, 2)
           });
           
           // Validate AI response
           if (!aiResponse) {
             throw new Error('AI returned empty response');
           }
+          
+          if (!aiResponse.code && !aiResponse.explanation) {
+            console.warn('⚠️ AI response has no code or explanation');
+          }
         } catch (error) {
-          console.error('❌ AI generation failed:', error);
-          console.error('Error stack:', error.stack);
+          console.error('❌ ========== AI GENERATION FAILED ==========');
+          console.error('❌ Error message:', error.message);
+          console.error('❌ Error name:', error.name);
+          console.error('❌ Error stack:', error.stack);
+          console.error('❌ Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
           
           // Send error message to user
           const errorMessage = {
             user: socket.userId,
             content: `@omega: ${cleanPrompt || 'request'}`,
             type: 'text',
-            error: `AI generation failed: ${error.message || 'Unknown error'}`
+            error: `AI generation failed: ${error.message || 'Unknown error'}`,
+            errorDetails: error.stack
           };
           
           room.messages.push(errorMessage);
@@ -643,19 +681,62 @@ Key File Contents:`;
           roomId
         });
         
-        console.log(`🤖 AI code generated and sent in room ${roomId} for ${socket.user?.username || 'unknown user'}`);
+        const totalTime = Date.now() - startTime;
+        console.log(`🤖 ========== AI GENERATION COMPLETE ==========`);
+        console.log(`🤖 Total time: ${totalTime}ms`);
+        console.log(`🤖 Sent to room ${roomId} for ${socket.user?.username || 'unknown user'}`);
       } catch (error) {
-        console.error('❌ Error generating AI code:', error);
-        console.error('Error stack:', error.stack);
+        const totalTime = Date.now() - startTime;
+        console.error('❌ ========== CRITICAL ERROR IN AI HANDLER ==========');
+        console.error('❌ Error message:', error.message);
+        console.error('❌ Error name:', error.name);
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Total time before error:', totalTime);
+        console.error('❌ Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
         
         // Ensure typing indicator is stopped on any error
-        io.to(`room:${data?.roomId || 'unknown'}`).emit('ai_typing_stopped', { roomId: data?.roomId });
+        const roomId = data?.roomId || 'unknown';
+        io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
         
         // Send detailed error to client
+        const errorMsg = `Failed to generate code: ${error.message || 'Unknown error'}`;
+        console.error('📤 Sending error to client:', errorMsg);
         socket.emit('error', { 
-          message: `Failed to generate code: ${error.message || 'Unknown error'}`,
+          message: errorMsg,
           details: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
+        
+        // Also send error as a message so user can see it
+        try {
+          const errorMessage = {
+            user: socket.userId,
+            content: `❌ Error: ${error.message || 'Unknown error occurred'}`,
+            type: 'text',
+            error: error.message
+          };
+          
+          const room = await ChatRoom.findById(roomId);
+          if (room) {
+            room.messages.push(errorMessage);
+            room.lastMessage = new Date();
+            await room.save();
+            
+            const User = (await import('../models/User.js')).default;
+            const savedError = room.messages[room.messages.length - 1];
+            const messageObj = savedError.toObject();
+            if (messageObj.user) {
+              const user = await User.findById(messageObj.user).select('username avatar').lean();
+              messageObj.user = user || { _id: messageObj.user, username: 'User', avatar: null };
+            }
+            
+            io.to(`room:${roomId}`).emit('new_message', {
+              message: messageObj,
+              roomId
+            });
+          }
+        } catch (saveError) {
+          console.error('❌ Failed to save error message:', saveError);
+        }
       }
     });
     

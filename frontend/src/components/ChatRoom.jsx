@@ -190,15 +190,19 @@ export default function ChatRoom() {
   useEffect(() => {
     // Initialize socket connection - use window location for proper proxy handling
     const socketUrl = import.meta.env.VITE_SOCKET_URL || window.location.origin.replace('5173', '5000');
+    logger.debug('🔌 Connecting to socket:', socketUrl);
+    
     const newSocket = io(socketUrl, {
       auth: { token },
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'], // Try polling first, then websocket (better for Render.com)
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       reconnectionAttempts: Infinity,
       timeout: 20000,
-      forceNew: false
+      forceNew: false,
+      upgrade: true,
+      rememberUpgrade: true
     });
 
     // Debounced fetchRoom function for socket events
@@ -313,9 +317,17 @@ export default function ChatRoom() {
     const flushMessageUpdates = () => {
       if (messageUpdateQueue.length === 0) return;
       
+      // Track new message IDs outside the setState callback
+      const newMessageIds = new Set();
+      
+      // Check if any new message is from current user - always scroll for own messages
+      const hasOwnMessage = messageUpdateQueue.some(data => {
+        const msgUserId = data.message.user?._id || data.message.user;
+        return user && (msgUserId?.toString() === user._id?.toString());
+      });
+      
       setMessages(prev => {
         let updated = [...prev];
-        const newMessageIds = new Set();
         
         messageUpdateQueue.forEach(data => {
           const exists = updated.some(msg => msg._id === data.message._id);
@@ -330,36 +342,30 @@ export default function ChatRoom() {
           }
         });
         
-        // Check if any new message is from current user - always scroll for own messages
-        const hasOwnMessage = messageUpdateQueue.some(data => {
-          const msgUserId = data.message.user?._id || data.message.user;
-          return user && (msgUserId?.toString() === user._id?.toString());
-        });
-        
-        // Only scroll if user is near bottom (within 300px) or it's own message
-        if (newMessageIds.size > 0) {
-          const container = messagesContainerRef.current;
-          if (hasOwnMessage) {
-            // Always scroll for own messages
-            shouldScrollToBottomRef.current = true;
-          } else if (container) {
-            const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
-            shouldScrollToBottomRef.current = isNearBottom;
-          } else {
-            shouldScrollToBottomRef.current = true;
-          }
-        }
-        
         return updated;
       });
       
       // Scroll after state update if we had new messages
       if (newMessageIds.size > 0) {
+        const container = messagesContainerRef.current;
+        if (hasOwnMessage) {
+          // Always scroll for own messages
+          shouldScrollToBottomRef.current = true;
+        } else if (container) {
+          const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
+          shouldScrollToBottomRef.current = isNearBottom;
+        } else {
+          shouldScrollToBottomRef.current = true;
+        }
+        
         setTimeout(() => {
           scrollToBottom();
           shouldScrollToBottomRef.current = false;
         }, 50); // Reduced delay for faster response
       }
+      
+      // Clear the queue after processing
+      messageUpdateQueue.length = 0;
     };
     
     newSocket.on('new_message', (data) => {
@@ -521,6 +527,7 @@ export default function ChatRoom() {
 
     newSocket.on('ai_typing', () => {
       logger.debug('🤖 AI is typing...');
+      console.log('🤖 AI typing indicator received');
       setIsTyping(true);
       // Clear any existing timeout
       if (aiTypingTimeoutRef.current) {
@@ -529,7 +536,16 @@ export default function ChatRoom() {
       // Set a timeout to turn off typing indicator if no response
       aiTypingTimeoutRef.current = setTimeout(() => {
         setIsTyping(false);
-        logger.debug('⏱️ AI typing timeout - if no response, check backend logs');
+        logger.warn('⏱️ AI typing timeout - no response after 30 seconds');
+        console.warn('⏱️ AI typing timeout - check backend logs for errors');
+        // Add timeout message to chat
+        setMessages(prev => [...prev, {
+          _id: `timeout-${Date.now()}`,
+          user: { _id: 'system', username: 'System', avatar: null },
+          content: '⏱️ AI response timed out after 30 seconds. Please check backend logs.',
+          type: 'system',
+          createdAt: new Date().toISOString()
+        }]);
         aiTypingTimeoutRef.current = null;
       }, 30000); // 30 seconds timeout
     });
@@ -544,16 +560,25 @@ export default function ChatRoom() {
     });
 
     newSocket.on('error', (error) => {
-      logger.error('Socket error:', error);
+      logger.error('❌ Socket error:', error);
+      console.error('Full error object:', error);
       // Turn off typing indicator on error
       setIsTyping(false);
       if (aiTypingTimeoutRef.current) {
         clearTimeout(aiTypingTimeoutRef.current);
         aiTypingTimeoutRef.current = null;
       }
-      if (error.message) {
-        alert(`Error: ${error.message}`);
-      }
+      const errorMsg = error?.message || error?.toString() || 'Unknown socket error';
+      alert(`Socket Error: ${errorMsg}`);
+      
+      // Add error message to chat for visibility
+      setMessages(prev => [...prev, {
+        _id: `error-${Date.now()}`,
+        user: { _id: 'system', username: 'System', avatar: null },
+        content: `❌ Error: ${errorMsg}`,
+        type: 'system',
+        createdAt: new Date().toISOString()
+      }]);
     });
     
     newSocket.on('connect_error', (error) => {
@@ -1184,11 +1209,21 @@ export default function ChatRoom() {
         });
         
         // Trigger AI immediately without waiting
+        logger.debug('🚀 Emitting ai_generate_code event:', { roomId, prompt: aiPrompt });
+        
+        if (!socket || !socket.connected) {
+          logger.error('❌ Socket not connected!');
+          alert('Not connected to server. Please refresh the page.');
+          return;
+        }
+        
         socket.emit('ai_generate_code', {
           roomId,
           prompt: aiPrompt,
           context: ''
         });
+        
+        logger.debug('✅ ai_generate_code event emitted');
         
         return;
       } else {
