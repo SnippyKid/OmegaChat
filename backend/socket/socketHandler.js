@@ -251,16 +251,23 @@ export function setupSocketIO(io) {
         if (!savedMessage.starredBy) savedMessage.starredBy = [];
         
         // Emit to all users in the room (including sender)
+        // Optimize: Use direct emit instead of fetchSockets for better performance
         const roomName = `room:${roomId}`;
-        const roomSockets = await io.in(roomName).fetchSockets();
-        console.log(`📨 Broadcasting message to ${roomSockets.length} clients in room ${roomId}`);
         
+        // Emit without await to avoid blocking
         io.to(roomName).emit('new_message', {
           message: savedMessage,
           roomId
         });
         
-        console.log(`✅ Message sent in room ${roomId} by ${socket.user.username} to ${roomSockets.length} clients`);
+        // Log asynchronously to avoid blocking
+        setImmediate(() => {
+          io.in(roomName).fetchSockets().then(roomSockets => {
+            console.log(`✅ Message sent in room ${roomId} by ${socket.user.username} to ${roomSockets.length} clients`);
+          }).catch(err => {
+            console.log(`✅ Message sent in room ${roomId} by ${socket.user.username}`);
+          });
+        });
       } catch (error) {
         console.error('Error sending message:', error);
         socket.emit('error', { message: 'Failed to send message' });

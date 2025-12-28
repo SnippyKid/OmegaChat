@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
@@ -56,6 +56,16 @@ export default function ChatRoom() {
   const messagesContainerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const roomCheckIntervalRef = useRef(null);
+  const fetchingMessagesRef = useRef(false);
+  const fetchingRoomRef = useRef(false);
+  const fetchRoomTimeoutRef = useRef(null);
+  const shouldScrollToBottomRef = useRef(true);
+  const fetchRoomRef = useRef(null);
+  const scrollThrottleRef = useRef(null);
+  const readDetectionThrottleRef = useRef(null);
+  const lastScrollTopRef = useRef(0);
+  const intersectionObserverRef = useRef(null);
+  const messageUpdateTimeoutRef = useRef(null);
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [memberUsername, setMemberUsername] = useState('');
   const [memberEmail, setMemberEmail] = useState('');
@@ -100,11 +110,21 @@ export default function ChatRoom() {
   }, [showMentions, showEmojiPicker]);
 
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (shouldScrollToBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, []);
 
-  const fetchMessages = useCallback(async (skip = 0, append = false) => {
+  const fetchMessages = useCallback(async (skip = 0, append = false, shouldScroll = false) => {
     if (!roomId || !token) return;
+    
+    // Prevent concurrent fetches
+    if (fetchingMessagesRef.current) {
+      console.log('⏸️ Already fetching messages, skipping...');
+      return;
+    }
+    
+    fetchingMessagesRef.current = true;
     
     try {
       const limit = 50;
@@ -124,7 +144,14 @@ export default function ChatRoom() {
         });
       } else {
         setMessages(newMessages);
-        setTimeout(() => scrollToBottom(), 100);
+        // Only scroll on initial load or when explicitly requested
+        if (shouldScroll || skip === 0) {
+          shouldScrollToBottomRef.current = true;
+          setTimeout(() => {
+            scrollToBottom();
+            shouldScrollToBottomRef.current = false;
+          }, 100);
+        }
       }
       
       // Check if there are more messages
@@ -132,6 +159,8 @@ export default function ChatRoom() {
       setMessagePage(Math.floor(skip / limit));
     } catch (error) {
       console.error('Error fetching messages:', error);
+    } finally {
+      fetchingMessagesRef.current = false;
     }
   }, [roomId, token, scrollToBottom]);
 
@@ -168,6 +197,18 @@ export default function ChatRoom() {
       forceNew: false
     });
 
+    // Debounced fetchRoom function for socket events
+    const debouncedFetchRoomForSocket = () => {
+      if (fetchRoomTimeoutRef.current) {
+        clearTimeout(fetchRoomTimeoutRef.current);
+      }
+      fetchRoomTimeoutRef.current = setTimeout(() => {
+        if (fetchRoomRef.current) {
+          fetchRoomRef.current();
+        }
+      }, 500);
+    };
+
     const joinRoom = () => {
       if (roomId && newSocket.connected) {
         console.log('Joining room:', roomId);
@@ -178,9 +219,9 @@ export default function ChatRoom() {
     newSocket.on('connect', () => {
       console.log('✅ Socket connected to server, socket ID:', newSocket.id);
       joinRoom();
-      // Refresh messages when socket connects
-      if (roomId) {
-        fetchMessages();
+      // Only refresh messages if we don't have any yet (initial connection)
+      if (roomId && messages.length === 0) {
+        fetchMessages(0, false, true);
       }
     });
 
@@ -203,10 +244,7 @@ export default function ChatRoom() {
     newSocket.on('reconnect', (attemptNumber) => {
       console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
       joinRoom();
-      // Refresh messages on reconnect to catch any missed messages
-      if (roomId) {
-        fetchMessages();
-      }
+      // Don't refresh messages on reconnect - socket events will handle new messages
     });
 
     newSocket.on('reconnect_attempt', (attemptNumber) => {
@@ -233,17 +271,17 @@ export default function ChatRoom() {
     newSocket.on('member_added', (data) => {
       console.log('👤 New member added:', data);
       if (data.roomId === roomId) {
-        // Refresh room data to get updated member list
-        fetchRoom();
+        // Use debounced fetch to prevent excessive calls
+        debouncedFetchRoomForSocket();
       }
     });
 
     // Listen for users joining the room
     newSocket.on('user_joined', (data) => {
       console.log('👤 User joined room:', data);
-      // Refresh room data to get updated member list
+      // Use debounced fetch to prevent excessive calls
       if (roomId) {
-        fetchRoom();
+        debouncedFetchRoomForSocket();
       }
     });
 
@@ -251,8 +289,8 @@ export default function ChatRoom() {
     newSocket.on('member_left', (data) => {
       console.log('👤 Member left room:', data);
       if (data.roomId === roomId) {
-        // Refresh room data to get updated member list
-        fetchRoom();
+        // Use debounced fetch to prevent excessive calls
+        debouncedFetchRoomForSocket();
       }
     });
 
@@ -260,24 +298,74 @@ export default function ChatRoom() {
     newSocket.on('user_left', (data) => {
       console.log('👤 User left room:', data);
       if (roomId) {
-        // Refresh room data to get updated member list
-        fetchRoom();
+        // Use debounced fetch to prevent excessive calls
+        debouncedFetchRoomForSocket();
       }
     });
 
-    newSocket.on('new_message', (data) => {
-      // Don't add duplicate messages (check by _id)
+    // Batch message updates to reduce re-renders
+    const messageUpdateQueue = [];
+    
+    const flushMessageUpdates = () => {
+      if (messageUpdateQueue.length === 0) return;
+      
       setMessages(prev => {
-        const exists = prev.some(msg => msg._id === data.message._id);
-        if (!exists) {
-          // Remove optimistic message if exists (by checking if temp message with same content exists)
-          const filtered = prev.filter(msg => !(msg.pending && msg.content === data.message.content && (msg.user?._id === data.message.user?._id || msg.user === data.message.user)));
-          return [...filtered, data.message];
+        let updated = [...prev];
+        const newMessageIds = new Set();
+        
+        messageUpdateQueue.forEach(data => {
+          const exists = updated.some(msg => msg._id === data.message._id);
+          if (!exists) {
+            // Remove optimistic message if exists
+            updated = updated.filter(msg => 
+              !(msg.pending && msg.content === data.message.content && 
+                (msg.user?._id === data.message.user?._id || msg.user === data.message.user))
+            );
+            updated.push(data.message);
+            newMessageIds.add(data.message._id);
+          }
+        });
+        
+        // Only scroll if user is near bottom (within 200px) and we have new messages
+        if (newMessageIds.size > 0) {
+          const container = messagesContainerRef.current;
+          if (container) {
+            const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+            shouldScrollToBottomRef.current = isNearBottom;
+          } else {
+            shouldScrollToBottomRef.current = true;
+          }
         }
-        return prev;
+        
+        return updated;
       });
-      // Use setTimeout to ensure DOM has updated
-      setTimeout(() => scrollToBottom(), 100);
+      
+      // Scroll after state update if we had new messages
+      if (newMessageIds.size > 0) {
+        setTimeout(() => {
+          scrollToBottom();
+          shouldScrollToBottomRef.current = false;
+        }, 100);
+      }
+    };
+    
+    newSocket.on('new_message', (data) => {
+      messageUpdateQueue.push(data);
+      
+      // Batch updates - flush every 50ms or immediately if queue is getting large
+      if (messageUpdateTimeoutRef.current) {
+        clearTimeout(messageUpdateTimeoutRef.current);
+      }
+      
+      if (messageUpdateQueue.length >= 5) {
+        // Flush immediately if queue is large
+        flushMessageUpdates();
+      } else {
+        // Otherwise batch for 50ms
+        messageUpdateTimeoutRef.current = setTimeout(() => {
+          flushMessageUpdates();
+        }, 50);
+      }
     });
 
     newSocket.on('ai_code_generated', (data) => {
@@ -292,9 +380,23 @@ export default function ChatRoom() {
       if (data.message) {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
-          return exists ? prev : [...prev, data.message];
+          if (!exists) {
+            // Only scroll if user is near bottom
+            const container = messagesContainerRef.current;
+            if (container) {
+              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+              shouldScrollToBottomRef.current = isNearBottom;
+            } else {
+              shouldScrollToBottomRef.current = true;
+            }
+            return [...prev, data.message];
+          }
+          return prev;
         });
-        setTimeout(() => scrollToBottom(), 100);
+        setTimeout(() => {
+          scrollToBottom();
+          shouldScrollToBottomRef.current = false;
+        }, 100);
       } else {
         console.error('❌ AI code generated event missing message:', data);
       }
@@ -306,9 +408,23 @@ export default function ChatRoom() {
       if (data.message) {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
-          return exists ? prev : [...prev, data.message];
+          if (!exists) {
+            // Only scroll if user is near bottom
+            const container = messagesContainerRef.current;
+            if (container) {
+              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+              shouldScrollToBottomRef.current = isNearBottom;
+            } else {
+              shouldScrollToBottomRef.current = true;
+            }
+            return [...prev, data.message];
+          }
+          return prev;
         });
-        setTimeout(() => scrollToBottom(), 100);
+        setTimeout(() => {
+          scrollToBottom();
+          shouldScrollToBottomRef.current = false;
+        }, 100);
       }
     });
 
@@ -318,9 +434,23 @@ export default function ChatRoom() {
       if (data.message) {
         setMessages(prev => {
           const exists = prev.some(msg => msg._id === data.message._id);
-          return exists ? prev : [...prev, data.message];
+          if (!exists) {
+            // Only scroll if user is near bottom
+            const container = messagesContainerRef.current;
+            if (container) {
+              const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+              shouldScrollToBottomRef.current = isNearBottom;
+            } else {
+              shouldScrollToBottomRef.current = true;
+            }
+            return [...prev, data.message];
+          }
+          return prev;
         });
-        setTimeout(() => scrollToBottom(), 100);
+        setTimeout(() => {
+          scrollToBottom();
+          shouldScrollToBottomRef.current = false;
+        }, 100);
       }
     });
 
@@ -348,7 +478,8 @@ export default function ChatRoom() {
 
     newSocket.on('pin_updated', (data) => {
       setPinnedMessages(data.pinnedMessages || []);
-      fetchRoom(); // Refresh room to get pinned messages
+      // Use debounced fetch to prevent excessive calls
+      debouncedFetchRoomForSocket();
     });
 
 
@@ -430,15 +561,7 @@ export default function ChatRoom() {
       }
     };
 
-    // Rejoin room if socket reconnects
-    newSocket.on('reconnect', () => {
-      console.log('🔄 Socket reconnected, rejoining room');
-      handleRoomJoin();
-      // Refresh messages on reconnect to catch any missed messages
-      if (roomId) {
-        fetchMessages();
-      }
-    });
+    // Rejoin room if socket reconnects (handled above, removing duplicate)
     
     // Also rejoin when roomId changes
     if (roomId && newSocket.connected) {
@@ -474,16 +597,21 @@ export default function ChatRoom() {
         clearInterval(roomCheckIntervalRef.current);
         roomCheckIntervalRef.current = null;
       }
+      // Cleanup fetchRoom timeout
+      if (fetchRoomTimeoutRef.current) {
+        clearTimeout(fetchRoomTimeoutRef.current);
+        fetchRoomTimeoutRef.current = null;
+      }
+      // Cleanup message update timeout
+      if (messageUpdateTimeoutRef.current) {
+        clearTimeout(messageUpdateTimeoutRef.current);
+        messageUpdateTimeoutRef.current = null;
+      }
       setIsTyping(false);
     };
-  }, [roomId, token]);
+  }, [roomId, token, messages.length]);
 
-  // Fetch messages when roomId or token changes (after fetchMessages is defined)
-  useEffect(() => {
-    if (roomId && token) {
-      fetchMessages();
-    }
-  }, [roomId, token, fetchMessages]);
+  // Removed duplicate useEffect - messages are fetched in the main useEffect below
 
   // Load more messages (for infinite scroll)
   const loadMoreMessages = useCallback(async () => {
@@ -495,7 +623,7 @@ export default function ChatRoom() {
     setLoadingMore(false);
   }, [loadingMore, hasMoreMessages, messagePage, fetchMessages]);
 
-  const fetchRoom = useCallback(async () => {
+  const fetchRoom = useCallback(async (force = false) => {
     if (!roomId) {
       setError('Invalid room ID');
       setLoading(false);
@@ -507,6 +635,14 @@ export default function ChatRoom() {
       setLoading(false);
       return;
     }
+
+    // Prevent concurrent fetches unless forced
+    if (fetchingRoomRef.current && !force) {
+      console.log('⏸️ Already fetching room, skipping...');
+      return;
+    }
+
+    fetchingRoomRef.current = true;
 
     try {
       setLoading(true);
@@ -541,8 +677,24 @@ export default function ChatRoom() {
       }
     } finally {
       setLoading(false);
+      fetchingRoomRef.current = false;
     }
   }, [roomId, token, navigate]);
+
+  // Store fetchRoom in ref for socket events
+  useEffect(() => {
+    fetchRoomRef.current = fetchRoom;
+  }, [fetchRoom]);
+
+  // Debounced fetchRoom for socket events (used outside socket useEffect)
+  const debouncedFetchRoom = useCallback(() => {
+    if (fetchRoomTimeoutRef.current) {
+      clearTimeout(fetchRoomTimeoutRef.current);
+    }
+    fetchRoomTimeoutRef.current = setTimeout(() => {
+      fetchRoom();
+    }, 500); // Debounce by 500ms
+  }, [fetchRoom]);
 
   // Debounced typing indicator
   const handleTyping = useCallback(() => {
@@ -564,13 +716,62 @@ export default function ChatRoom() {
     }, 3000);
   }, [socket, roomId]);
 
+  // Memoize message metadata to avoid recalculating on every render
+  const messagesWithMetadata = useMemo(() => {
+    return messages.map(message => {
+      const messageUserId = message.user?._id || message.user;
+      const isAIMessage = message.type === 'ai_code' || message.user?.username === 'Omega AI' || message.user?.username === 'omega';
+      const isDKMessage = message.type === 'dk_bot' || message.user?.username === 'DK' || message.user?.username === 'dk' || message.user?._id === 'dk-bot';
+      const isChaiWalaMessage = message.type === 'chaiwala_bot' || message.user?.username === 'ChaiWala' || message.user?._id === 'chaiwala-bot';
+      const isOwnMessage = !isAIMessage && !isDKMessage && !isChaiWalaMessage && user && (messageUserId === user._id || messageUserId?.toString() === user._id?.toString());
+      
+      const userObj = typeof message.user === 'object' ? message.user : { username: 'User', avatar: null };
+      let messageUser = userObj;
+      if (isDKMessage && !userObj.avatar) {
+        messageUser = { ...userObj, avatar: '/avatars/dk-avatar.png' };
+      } else if (isChaiWalaMessage && !userObj.avatar) {
+        messageUser = { ...userObj, avatar: '/avatars/chaiwala-avatar.png' };
+      }
+      
+      return {
+        ...message,
+        _metadata: {
+          messageUserId,
+          isAIMessage,
+          isDKMessage,
+          isChaiWalaMessage,
+          isOwnMessage,
+          messageUser
+        }
+      };
+    });
+  }, [messages, user]);
+
   // Fetch room and messages immediately when component mounts or roomId changes
   useEffect(() => {
     if (roomId && token) {
-      fetchRoom();
-      fetchMessages();
+      // Reset scroll behavior for new room
+      shouldScrollToBottomRef.current = true;
+      fetchRoom(true); // Force fetch on room change
+      fetchMessages(0, false, true); // Initial load, should scroll
     }
-  }, [roomId, token, fetchRoom, fetchMessages]);
+  }, [roomId, token]); // Removed fetchRoom and fetchMessages from dependencies to prevent loops
+
+  // Cleanup intersection observer on unmount
+  useEffect(() => {
+    return () => {
+      if (intersectionObserverRef.current) {
+        intersectionObserverRef.current.disconnect();
+        intersectionObserverRef.current = null;
+      }
+      if (scrollThrottleRef.current) {
+        clearTimeout(scrollThrottleRef.current);
+      }
+      if (readDetectionThrottleRef.current) {
+        clearTimeout(readDetectionThrottleRef.current);
+      }
+    };
+  }, []);
 
   // Message action handlers
   const handleEditMessage = async (messageId, newContent) => {
@@ -1412,7 +1613,7 @@ export default function ChatRoom() {
                 setError(null);
                 setLoading(true);
                 fetchRoom();
-                fetchMessages();
+                fetchMessages(0, false, true);
               }}
               className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
             >
@@ -1681,29 +1882,65 @@ export default function ChatRoom() {
           onDrop={handleDrop}
           onScroll={(e) => {
             const container = e.target;
+            const currentScrollTop = container.scrollTop;
             
-            // Infinite scroll - load more when near top
-            if (container.scrollTop < 100 && hasMoreMessages && !loadingMore) {
-              loadMoreMessages();
+            // Throttle scroll handler - only run every 100ms
+            if (scrollThrottleRef.current) {
+              clearTimeout(scrollThrottleRef.current);
             }
             
-            // Auto-mark messages as read when they come into view
-            const containerRect = container.getBoundingClientRect();
-            const visibleMessages = messages.filter(msg => {
-              const element = document.getElementById(`message-${msg._id}`);
-              if (!element) return false;
-              const rect = element.getBoundingClientRect();
-              return rect.top >= containerRect.top && rect.bottom <= containerRect.bottom;
-            });
-            
-            // Mark visible non-own messages as read
-            visibleMessages.forEach(msg => {
-              const msgUserId = msg.user?._id || msg.user;
-              const isMsgOwn = user && (msgUserId?.toString() === user._id?.toString() || msgUserId?.toString() === user._id?.toString());
-              if (!isMsgOwn && !msg.readBy?.some(r => (r.user?._id || r.user).toString() === user?._id?.toString())) {
-                handleMarkAsRead(msg._id);
+            scrollThrottleRef.current = setTimeout(() => {
+              // Infinite scroll - load more when near top
+              if (currentScrollTop < 100 && hasMoreMessages && !loadingMore) {
+                loadMoreMessages();
               }
-            });
+              
+              // Only check read status if scroll position changed significantly (more than 50px)
+              const scrollDelta = Math.abs(currentScrollTop - lastScrollTopRef.current);
+              if (scrollDelta > 50) {
+                lastScrollTopRef.current = currentScrollTop;
+                
+                // Throttle read detection - only check every 500ms
+                if (readDetectionThrottleRef.current) {
+                  clearTimeout(readDetectionThrottleRef.current);
+                }
+                
+                readDetectionThrottleRef.current = setTimeout(() => {
+                  // Use Intersection Observer for better performance
+                  if (!intersectionObserverRef.current && user) {
+                    intersectionObserverRef.current = new IntersectionObserver(
+                      (entries) => {
+                        entries.forEach(entry => {
+                          if (entry.isIntersecting) {
+                            const messageId = entry.target.getAttribute('data-message-id');
+                            if (messageId) {
+                              const message = messages.find(m => m._id === messageId);
+                              if (message) {
+                                const msgUserId = message.user?._id || message.user;
+                                const isMsgOwn = user && (msgUserId?.toString() === user._id?.toString());
+                                if (!isMsgOwn && !message.readBy?.some(r => (r.user?._id || r.user).toString() === user?._id?.toString())) {
+                                  handleMarkAsRead(messageId);
+                                }
+                              }
+                            }
+                          }
+                        });
+                      },
+                      { root: container, rootMargin: '0px', threshold: 0.5 }
+                    );
+                  }
+                  
+                  // Observe all message elements
+                  messages.forEach(msg => {
+                    const element = document.getElementById(`message-${msg._id}`);
+                    if (element && intersectionObserverRef.current) {
+                      element.setAttribute('data-message-id', msg._id);
+                      intersectionObserverRef.current.observe(element);
+                    }
+                  });
+                }, 500);
+              }
+            }, 100);
           }}
         >
           {/* Search Results */}
@@ -1746,23 +1983,9 @@ export default function ChatRoom() {
               <div className="text-sm text-gray-500 animate-pulse">Loading older messages...</div>
             </div>
           )}
-          {messages.map((message) => {
-            const messageUserId = message.user?._id || message.user;
-            const isAIMessage = message.type === 'ai_code' || message.user?.username === 'Omega AI' || message.user?.username === 'omega';
-            const isDKMessage = message.type === 'dk_bot' || message.user?.username === 'DK' || message.user?.username === 'dk' || message.user?._id === 'dk-bot';
-            const isChaiWalaMessage = message.type === 'chaiwala_bot' || message.user?.username === 'ChaiWala' || message.user?._id === 'chaiwala-bot';
-            const isOwnMessage = !isAIMessage && !isDKMessage && !isChaiWalaMessage && user && (messageUserId === user._id || messageUserId?.toString() === user._id?.toString());
-            // For bots, ensure avatar is set
-            const messageUser = (() => {
-              const userObj = typeof message.user === 'object' ? message.user : { username: 'User', avatar: null };
-              if (isDKMessage && !userObj.avatar) {
-                return { ...userObj, avatar: '/avatars/dk-avatar.png' };
-              }
-              if (isChaiWalaMessage && !userObj.avatar) {
-                return { ...userObj, avatar: '/avatars/chaiwala-avatar.png' };
-              }
-              return userObj;
-            })();
+          {messagesWithMetadata.map((message) => {
+            // Use pre-computed metadata
+            const { messageUserId, isAIMessage, isDKMessage, isChaiWalaMessage, isOwnMessage, messageUser } = message._metadata;
             
             return (
             <div
