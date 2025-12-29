@@ -255,13 +255,13 @@ export default function ChatRoom() {
       }
     });
 
-    // Periodically verify we're still in the room (every 30 seconds)
+    // Periodically verify we're still in the room (every 60 seconds - reduced frequency for performance)
     roomCheckIntervalRef.current = setInterval(() => {
       if (roomId && newSocket.connected) {
         logger.debug('🔄 Periodic room check - ensuring we are still in room:', roomId);
         joinRoom();
       }
-    }, 30000);
+    }, 60000); // Increased from 30s to 60s to reduce overhead
 
     newSocket.on('disconnect', (reason) => {
       logger.warn('⚠️ Socket disconnected:', reason);
@@ -369,16 +369,42 @@ export default function ChatRoom() {
       
       setMessages(prev => {
         let updated = [...prev];
+        const seenIds = new Set(updated.map(msg => msg._id?.toString()));
         
         filteredQueue.forEach(data => {
-          const exists = updated.some(msg => msg._id === data.message._id);
-          if (!exists) {
-            // Remove optimistic message if exists
-            updated = updated.filter(msg => 
-              !(msg.pending && msg.content === data.message.content && 
-                (msg.user?._id === data.message.user?._id || msg.user === data.message.user))
-            );
-            updated.push(data.message);
+          const messageId = data.message._id?.toString();
+          
+          // Skip if message already exists
+          if (messageId && seenIds.has(messageId)) {
+            logger.debug('⚠️ Duplicate message detected, skipping:', messageId);
+            return;
+          }
+          
+          // Remove optimistic message if exists (match by content, user, and timestamp)
+          const msgUserId = data.message.user?._id?.toString() || data.message.user?.toString();
+          updated = updated.filter(msg => {
+            // Keep if it's not a pending message
+            if (!msg.pending) return true;
+            
+            // Remove if it matches the incoming message
+            const optimisticUserId = msg.user?._id?.toString() || msg.user?.toString();
+            const contentMatch = msg.content === data.message.content;
+            const userMatch = optimisticUserId === msgUserId;
+            const timeMatch = Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 5000; // Within 5 seconds
+            
+            // Remove optimistic message if content, user, and time match
+            if (contentMatch && userMatch && timeMatch) {
+              logger.debug('🗑️ Removing optimistic message:', msg._id);
+              return false;
+            }
+            
+            return true;
+          });
+          
+          // Add the real message
+          updated.push(data.message);
+          if (messageId) {
+            seenIds.add(messageId);
             newMessageIds.add(data.message._id);
           }
         });
@@ -399,11 +425,11 @@ export default function ChatRoom() {
           shouldScrollToBottomRef.current = true;
         }
         
-        // Immediate scroll for faster response
+        // Scroll with slight delay for smoother performance
         setTimeout(() => {
           scrollToBottom();
           shouldScrollToBottomRef.current = false;
-        }, 10);
+        }, 50);
       }
       
       // Clear the queue after processing
@@ -417,7 +443,23 @@ export default function ChatRoom() {
         return;
       }
       
-      logger.debug('📨 Received new_message event:', data);
+      // Check if message already exists in queue to prevent duplicates
+      const messageId = data.message?._id?.toString();
+      const alreadyQueued = messageUpdateQueue.some(queued => 
+        queued.message?._id?.toString() === messageId
+      );
+      
+      if (alreadyQueued) {
+        if (import.meta.env.MODE === 'development') {
+          logger.debug('⚠️ Message already in queue, skipping:', messageId);
+        }
+        return;
+      }
+      
+      // Only log in development to reduce overhead
+      if (import.meta.env.MODE === 'development') {
+        logger.debug('📨 Received new_message event:', data);
+      }
       messageUpdateQueue.push(data);
       
       // Batch updates - flush every 50ms or immediately if queue is getting large
@@ -425,14 +467,14 @@ export default function ChatRoom() {
         clearTimeout(messageUpdateTimeoutRef.current);
       }
       
-      if (messageUpdateQueue.length >= 3) {
+      if (messageUpdateQueue.length >= 5) {
         // Flush immediately if queue is getting large
         flushMessageUpdates();
       } else {
-        // Otherwise batch for 25ms for very fast response
+        // Batch for 50ms - balanced between responsiveness and performance
         messageUpdateTimeoutRef.current = setTimeout(() => {
           flushMessageUpdates();
-        }, 25);
+        }, 50);
       }
     });
 
@@ -446,14 +488,29 @@ export default function ChatRoom() {
       }
       
       if (data.message) {
+        const messageId = data.message._id?.toString();
         setMessages(prev => {
-          const exists = prev.some(msg => msg._id === data.message._id);
-          if (!exists) {
-            // Always scroll for AI responses (user requested it)
-            shouldScrollToBottomRef.current = true;
-            return [...prev, data.message];
+          // Check for duplicate by ID
+          const existsById = prev.some(msg => msg._id?.toString() === messageId);
+          if (existsById) {
+            logger.debug('⚠️ AI message already exists, skipping:', messageId);
+            return prev;
           }
-          return prev;
+          
+          // Also check for duplicate by content and type (in case ID differs but it's the same message)
+          const existsByContent = prev.some(msg => 
+            msg.type === 'ai_code' && 
+            msg.content === data.message.content &&
+            Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 2000
+          );
+          if (existsByContent) {
+            logger.debug('⚠️ AI message with same content already exists, skipping');
+            return prev;
+          }
+          
+          // Always scroll for AI responses (user requested it)
+          shouldScrollToBottomRef.current = true;
+          return [...prev, data.message];
         });
         // Use requestAnimationFrame for smoother scroll
         requestAnimationFrame(() => {
@@ -471,14 +528,29 @@ export default function ChatRoom() {
     newSocket.on('dk_bot_response', (data) => {
       logger.debug('📊 Received DK bot response:', data);
       if (data.message) {
+        const messageId = data.message._id?.toString();
         setMessages(prev => {
-          const exists = prev.some(msg => msg._id === data.message._id);
-          if (!exists) {
-            // Always scroll for bot responses (user requested it)
-            shouldScrollToBottomRef.current = true;
-            return [...prev, data.message];
+          // Check for duplicate by ID
+          const existsById = prev.some(msg => msg._id?.toString() === messageId);
+          if (existsById) {
+            logger.debug('⚠️ DK bot message already exists, skipping:', messageId);
+            return prev;
           }
-          return prev;
+          
+          // Also check for duplicate by content and type
+          const existsByContent = prev.some(msg => 
+            msg.type === data.message.type && 
+            msg.content === data.message.content &&
+            Math.abs(new Date(msg.createdAt).getTime() - new Date(data.message.createdAt).getTime()) < 2000
+          );
+          if (existsByContent) {
+            logger.debug('⚠️ DK bot message with same content already exists, skipping');
+            return prev;
+          }
+          
+          // Always scroll for bot responses (user requested it)
+          shouldScrollToBottomRef.current = true;
+          return [...prev, data.message];
         });
         requestAnimationFrame(() => {
           setTimeout(() => {
@@ -770,7 +842,7 @@ export default function ChatRoom() {
     }
     fetchRoomTimeoutRef.current = setTimeout(() => {
       fetchRoom();
-    }, 500); // Debounce by 500ms
+    }, 1000); // Increased debounce to 1s to reduce API calls
   }, [fetchRoom]);
 
   // Debounced typing indicator
@@ -794,7 +866,7 @@ export default function ChatRoom() {
   }, [socket, roomId]);
 
   // Limit rendered messages to reduce DOM work in large rooms
-  const MAX_RENDERED_MESSAGES = 200;
+  const MAX_RENDERED_MESSAGES = 100; // Reduced for better performance
   const renderedMessages = useMemo(() => {
     if (messages.length <= MAX_RENDERED_MESSAGES) return messages;
     return messages.slice(messages.length - MAX_RENDERED_MESSAGES);

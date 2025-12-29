@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import apiClient from '../config/axios';
@@ -683,16 +683,24 @@ export default function Dashboard() {
     }
   }, [showInviteModal, selectedProject?._id]);
 
-  // Filter projects and rooms based on search query
-  const filteredProjects = projects.filter(project => 
-    project.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    project.githubRepo?.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    project.description?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Memoize filtered projects and rooms to avoid recalculating on every render
+  const filteredProjects = useMemo(() => {
+    if (!searchQuery.trim()) return projects;
+    const query = searchQuery.toLowerCase();
+    return projects.filter(project => 
+      project.name?.toLowerCase().includes(query) ||
+      project.githubRepo?.fullName?.toLowerCase().includes(query) ||
+      project.description?.toLowerCase().includes(query)
+    );
+  }, [projects, searchQuery]);
 
-  const filteredPersonalRooms = personalRooms.filter(room =>
-    room.name?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredPersonalRooms = useMemo(() => {
+    if (!searchQuery.trim()) return personalRooms;
+    const query = searchQuery.toLowerCase();
+    return personalRooms.filter(room =>
+      room.name?.toLowerCase().includes(query)
+    );
+  }, [personalRooms, searchQuery]);
 
   if (loading) {
     return (

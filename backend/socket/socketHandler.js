@@ -351,14 +351,16 @@ export function setupSocketIO(io) {
           roomId
         });
         
-        // Log asynchronously to avoid blocking
-        setImmediate(() => {
-          io.in(roomName).fetchSockets().then(roomSockets => {
-            console.log(`✅ Message sent in room ${roomId} by ${socket.user.username} to ${roomSockets.length} clients`);
-          }).catch(err => {
-            console.log(`✅ Message sent in room ${roomId} by ${socket.user.username}`);
+        // Log asynchronously to avoid blocking (only in development)
+        if (process.env.NODE_ENV === 'development') {
+          setImmediate(() => {
+            io.in(roomName).fetchSockets().then(roomSockets => {
+              console.log(`✅ Message sent in room ${roomId} by ${socket.user.username} to ${roomSockets.length} clients`);
+            }).catch(() => {
+              // Silently fail logging
+            });
           });
-        });
+        }
       } catch (error) {
         console.error('Error sending message:', error);
         socket.emit('error', { message: 'Failed to send message' });
