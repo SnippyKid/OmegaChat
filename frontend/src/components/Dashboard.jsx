@@ -465,6 +465,11 @@ export default function Dashboard() {
   };
 
   const handleDeleteProject = async (projectId, e) => {
+    console.log('🗑️ ========== DELETE PROJECT CALLED ==========');
+    console.log('🗑️ Project ID:', projectId);
+    console.log('🗑️ Event:', e);
+    console.log('🗑️ Token available:', !!token);
+    
     if (e) {
       e.stopPropagation();
       e.preventDefault();
@@ -477,10 +482,12 @@ export default function Dashboard() {
     }
     
     // Second confirmation
-    if (!window.confirm('Last chance! Type OK to confirm deletion, or Cancel to abort.')) {
+    if (!window.confirm('Last chance! Click OK to confirm deletion, or Cancel to abort.')) {
+      console.log('❌ User cancelled second confirmation');
       return;
     }
     
+    console.log('✅ User confirmed deletion, proceeding with delete...');
     setDeletingProject(projectId);
     setShowProjectMenu(null); // Close menu immediately
     
@@ -546,14 +553,19 @@ export default function Dashboard() {
   };
 
   const handleLeaveProject = async (projectId, e) => {
+    console.log('🚪 handleLeaveProject called with projectId:', projectId);
+    
     if (e) {
       e.stopPropagation();
       e.preventDefault();
     }
     
     if (!window.confirm('Are you sure you want to leave this project? You will lose access to all project chatrooms.')) {
+      console.log('❌ User cancelled leave confirmation');
       return;
     }
+    
+    console.log('✅ User confirmed leave, proceeding...');
     
     setLeavingProject(projectId);
     setShowProjectMenu(null); // Close menu immediately
@@ -1053,21 +1065,26 @@ export default function Dashboard() {
                         <Github size={20} className="text-green-500" />
                         <div className="relative">
                           <button
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              e.preventDefault();
+                              console.log('📋 Menu button clicked for project:', project._id);
                               setShowProjectMenu(showProjectMenu === project._id ? null : project._id);
                             }}
-                            className="p-1.5 hover:bg-green-100 rounded-lg transition-colors opacity-100"
+                            className="p-1.5 hover:bg-green-100 rounded-lg transition-colors opacity-100 cursor-pointer"
                             title="Project options"
                           >
                             <MoreVertical size={18} className="text-green-600" />
                           </button>
                           {showProjectMenu === project._id && (
                             <div 
-                              className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50 min-w-[160px]"
+                              className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50 min-w-[180px]"
                               onClick={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
                             >
                               <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   e.preventDefault();
@@ -1077,20 +1094,23 @@ export default function Dashboard() {
                                   }
                                   setShowProjectMenu(null);
                                 }}
-                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                                className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
                               >
                                 <Eye size={16} />
                                 Open Chat
                               </button>
                               {!isOwner && (
                                 <button
+                                  type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     e.preventDefault();
+                                    console.log('🚪 Leave button clicked for project:', project._id);
                                     handleLeaveProject(project._id, e);
                                   }}
                                   disabled={leavingProject === project._id}
-                                  className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                                  className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                                  style={{ cursor: leavingProject === project._id ? 'not-allowed' : 'pointer' }}
                                 >
                                   {leavingProject === project._id ? (
                                     <Loader2 size={16} className="animate-spin" />
@@ -1104,13 +1124,16 @@ export default function Dashboard() {
                                 <>
                                   <div className="border-t border-gray-200 my-1"></div>
                                   <button
+                                    type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       e.preventDefault();
+                                      console.log('🗑️ Delete button clicked for project:', project._id);
                                       handleDeleteProject(project._id, e);
                                     }}
                                     disabled={deletingProject === project._id}
-                                    className="w-full px-4 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2 disabled:opacity-50 transition-colors"
+                                    className="w-full px-4 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                                    style={{ cursor: deletingProject === project._id ? 'not-allowed' : 'pointer' }}
                                   >
                                     {deletingProject === project._id ? (
                                       <>
@@ -1893,9 +1916,12 @@ export default function Dashboard() {
       {(showRoomMenu || showProjectMenu) && (
         <div
           className="fixed inset-0 z-40"
-          onClick={() => {
-            setShowRoomMenu(null);
-            setShowProjectMenu(null);
+          onClick={(e) => {
+            // Only close if clicking directly on the backdrop, not on menu items
+            if (e.target === e.currentTarget) {
+              setShowRoomMenu(null);
+              setShowProjectMenu(null);
+            }
           }}
         />
       )}
