@@ -754,24 +754,32 @@ router.delete('/:projectId', authenticateToken, async (req, res) => {
     
     // Delete all chatrooms
     if (chatRoomIdsToDelete.length > 0) {
-      await ChatRoom.deleteMany({ _id: { $in: chatRoomIdsToDelete } });
-      console.log(`✅ Deleted ${chatRoomIdsToDelete.length} chatroom(s) for project ${project._id}`);
+      const deleteResult = await ChatRoom.deleteMany({ _id: { $in: chatRoomIdsToDelete } });
+      console.log(`✅ Deleted ${deleteResult.deletedCount} chatroom(s) for project ${project._id}`);
     }
     
     // Remove project from all users' projects list
-    await User.updateMany(
+    const userUpdateResult = await User.updateMany(
       { projects: project._id },
       { $pull: { projects: project._id } }
     );
+    console.log(`✅ Removed project from ${userUpdateResult.modifiedCount} user(s)`);
     
     // Delete the project
-    await Project.findByIdAndDelete(req.params.projectId);
+    const deletedProject = await Project.findByIdAndDelete(req.params.projectId);
     
-    console.log(`✅ Project ${req.params.projectId} deleted successfully`);
+    if (!deletedProject) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Project not found or already deleted' 
+      });
+    }
+    
+    console.log(`✅ Project ${req.params.projectId} (${project.name}) deleted successfully`);
     
     res.json({ 
       success: true, 
-      message: 'Project deleted successfully' 
+      message: `Project "${project.name}" and all associated chatrooms have been permanently deleted` 
     });
   } catch (error) {
     console.error('❌ Error deleting project:', error);

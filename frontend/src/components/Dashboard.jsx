@@ -470,34 +470,66 @@ export default function Dashboard() {
       e.preventDefault();
     }
     
-    if (!window.confirm('Are you sure you want to delete this project? This will also delete the associated chatroom. This action cannot be undone.')) {
+    // Double confirmation for destructive action
+    const confirmMessage = '⚠️ WARNING: This will permanently delete the project and ALL associated chatrooms. This action CANNOT be undone.\n\nAre you absolutely sure you want to delete this project?';
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+    
+    // Second confirmation
+    if (!window.confirm('Last chance! Type OK to confirm deletion, or Cancel to abort.')) {
       return;
     }
     
     setDeletingProject(projectId);
+    setShowProjectMenu(null); // Close menu immediately
+    
     try {
+      console.log('🗑️ Attempting to delete project:', projectId);
       const response = await apiClient.delete(`/api/projects/${projectId}`, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000 // 15 second timeout
       });
+      
+      console.log('✅ Delete response:', response.data);
       
       // Check if deletion was successful
       if (response.data?.success !== false) {
-        showNotification(response.data?.message || 'Project deleted successfully', 'success');
-        // Refresh projects list
+        showNotification('✅ Project and all chatrooms deleted successfully', 'success');
+        
+        // Force refresh projects list immediately
         await fetchProjects();
+        
+        // Also refresh personal rooms in case any were linked
+        await fetchPersonalRooms();
+        
+        // Small delay to ensure UI updates
+        setTimeout(() => {
+          setDeletingProject(null);
+        }, 500);
       } else {
         throw new Error(response.data?.error || 'Failed to delete project');
       }
     } catch (error) {
-      console.error('Error deleting project:', error);
-      const errorMessage = error.response?.data?.error || 
-                          error.response?.data?.message || 
-                          error.message || 
-                          'Failed to delete project';
+      console.error('❌ Error deleting project:', error);
+      console.error('Error response:', error.response?.data);
+      
+      let errorMessage = 'Failed to delete project';
+      
+      if (error.response?.status === 403) {
+        errorMessage = 'You do not have permission to delete this project. Only the project owner can delete it.';
+      } else if (error.response?.status === 404) {
+        errorMessage = 'Project not found. It may have already been deleted.';
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
       showNotification(errorMessage, 'error');
-    } finally {
       setDeletingProject(null);
-      setShowProjectMenu(null);
     }
   };
 
@@ -936,8 +968,14 @@ export default function Dashboard() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredProjects.map((project) => {
-              const isOwner = project.members?.some(m => m.user?._id === user?._id && m.role === 'owner') || 
-                             project.members?.some(m => m.user === user?._id && m.role === 'owner');
+              // Improved owner detection - handle all possible user ID formats
+              const isOwner = project.members?.some(m => {
+                const memberUserId = typeof m.user === 'object' && m.user?._id 
+                  ? m.user._id.toString() 
+                  : (m.user?.toString() || m.user);
+                const currentUserId = user?._id?.toString() || user?._id;
+                return memberUserId === currentUserId && m.role === 'owner';
+              }) || false;
               return (
                 <div
                   key={project._id}
@@ -968,7 +1006,8 @@ export default function Dashboard() {
                               e.stopPropagation();
                               setShowProjectMenu(showProjectMenu === project._id ? null : project._id);
                             }}
-                            className="p-1.5 hover:bg-green-100 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-1.5 hover:bg-green-100 rounded-lg transition-colors opacity-100"
+                            title="Project options"
                           >
                             <MoreVertical size={18} className="text-green-600" />
                           </button>
@@ -1011,22 +1050,30 @@ export default function Dashboard() {
                                 </button>
                               )}
                               {isOwner && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    e.preventDefault();
-                                    handleDeleteProject(project._id, e);
-                                  }}
-                                  disabled={deletingProject === project._id}
-                                  className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50"
-                                >
-                                  {deletingProject === project._id ? (
-                                    <Loader2 size={16} className="animate-spin" />
-                                  ) : (
-                                    <Trash2 size={16} />
-                                  )}
-                                  Delete Project
-                                </button>
+                                <>
+                                  <div className="border-t border-gray-200 my-1"></div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      handleDeleteProject(project._id, e);
+                                    }}
+                                    disabled={deletingProject === project._id}
+                                    className="w-full px-4 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2 disabled:opacity-50 transition-colors"
+                                  >
+                                    {deletingProject === project._id ? (
+                                      <>
+                                        <Loader2 size={16} className="animate-spin" />
+                                        Deleting...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Trash2 size={16} />
+                                        Delete Project Permanently
+                                      </>
+                                    )}
+                                  </button>
+                                </>
                               )}
                             </div>
                           )}

@@ -67,6 +67,8 @@ export default function ChatRoom() {
   const lastScrollTopRef = useRef(0);
   const intersectionObserverRef = useRef(null);
   const messageUpdateTimeoutRef = useRef(null);
+  const isUserScrollingRef = useRef(false); // Track if user is manually scrolling
+  const userScrollTimeoutRef = useRef(null); // Timeout to reset user scroll flag
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [memberUsername, setMemberUsername] = useState('');
   const [memberEmail, setMemberEmail] = useState('');
@@ -111,10 +113,31 @@ export default function ChatRoom() {
   }, [showMentions, showEmojiPicker]);
 
   const scrollToBottom = useCallback((force = false) => {
+    // Don't auto-scroll if user is manually scrolling
+    if (isUserScrollingRef.current && !force) {
+      return;
+    }
+    
     if (force || shouldScrollToBottomRef.current) {
+      // Temporarily disable user scroll detection during auto-scroll
+      const wasUserScrolling = isUserScrollingRef.current;
+      isUserScrollingRef.current = false;
+      
       // Use requestAnimationFrame for smoother scrolling
       requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const container = messagesContainerRef.current;
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        } else {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        // Re-enable user scroll detection after a short delay
+        setTimeout(() => {
+          if (!wasUserScrolling) {
+            isUserScrollingRef.current = false;
+          }
+        }, 100);
       });
     }
   }, []);
@@ -158,10 +181,10 @@ export default function ChatRoom() {
         setMessages(newMessages);
         // Only scroll on initial load or when explicitly requested
         if (shouldScroll || skip === 0) {
+          isUserScrollingRef.current = false; // Reset on initial load
           shouldScrollToBottomRef.current = true;
           setTimeout(() => {
-            scrollToBottom();
-            shouldScrollToBottomRef.current = false;
+            scrollToBottom(true);
           }, 100);
         }
       }
@@ -416,19 +439,29 @@ export default function ChatRoom() {
       if (newMessageIds.size > 0) {
         const container = messagesContainerRef.current;
         if (hasOwnMessage) {
-          // Always scroll for own messages
+          // Always scroll for own messages (user sent it, they want to see it)
+          isUserScrollingRef.current = false;
           shouldScrollToBottomRef.current = true;
         } else if (container) {
+          // Only auto-scroll if user is near bottom (within 300px)
           const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
-          shouldScrollToBottomRef.current = isNearBottom;
+          if (isNearBottom && !isUserScrollingRef.current) {
+            shouldScrollToBottomRef.current = true;
+          } else {
+            // User is scrolled up, don't auto-scroll
+            shouldScrollToBottomRef.current = false;
+          }
         } else {
+          // No container yet, enable scroll for initial load
           shouldScrollToBottomRef.current = true;
         }
         
         // Scroll with slight delay for smoother performance
         setTimeout(() => {
           scrollToBottom();
-          shouldScrollToBottomRef.current = false;
+          if (!hasOwnMessage) {
+            shouldScrollToBottomRef.current = false;
+          }
         }, 50);
       }
       
@@ -922,6 +955,9 @@ export default function ChatRoom() {
       if (readDetectionThrottleRef.current) {
         clearTimeout(readDetectionThrottleRef.current);
       }
+      if (userScrollTimeoutRef.current) {
+        clearTimeout(userScrollTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -1365,10 +1401,10 @@ export default function ChatRoom() {
     setMessages(prev => [...prev, optimisticMessage]);
     
     // Force scroll for own messages - always scroll when user sends
+    isUserScrollingRef.current = false; // Reset user scroll flag for own messages
     shouldScrollToBottomRef.current = true;
     setTimeout(() => {
       scrollToBottom(true);
-      shouldScrollToBottomRef.current = false;
     }, 50);
     
     // Clear input and reply immediately
@@ -2087,6 +2123,41 @@ export default function ChatRoom() {
           onScroll={(e) => {
             const container = e.target;
             const currentScrollTop = container.scrollTop;
+            const scrollHeight = container.scrollHeight;
+            const clientHeight = container.clientHeight;
+            const isAtBottom = scrollHeight - currentScrollTop - clientHeight < 50; // 50px threshold
+            
+            // Detect if user is manually scrolling (not at bottom)
+            if (!isAtBottom) {
+              isUserScrollingRef.current = true;
+              shouldScrollToBottomRef.current = false;
+              
+              // Reset user scrolling flag after 2 seconds of no scrolling
+              if (userScrollTimeoutRef.current) {
+                clearTimeout(userScrollTimeoutRef.current);
+              }
+              userScrollTimeoutRef.current = setTimeout(() => {
+                // If user scrolls back to bottom, re-enable auto-scroll
+                const container = messagesContainerRef.current;
+                if (container) {
+                  const currentTop = container.scrollTop;
+                  const currentHeight = container.scrollHeight;
+                  const currentClient = container.clientHeight;
+                  if (currentHeight - currentTop - currentClient < 50) {
+                    isUserScrollingRef.current = false;
+                    shouldScrollToBottomRef.current = true;
+                  }
+                }
+              }, 2000);
+            } else {
+              // User is at bottom, enable auto-scroll
+              isUserScrollingRef.current = false;
+              shouldScrollToBottomRef.current = true;
+              if (userScrollTimeoutRef.current) {
+                clearTimeout(userScrollTimeoutRef.current);
+                userScrollTimeoutRef.current = null;
+              }
+            }
             
             // Throttle scroll handler - only run every 150ms (reduced frequency for better performance)
             if (scrollThrottleRef.current) {
