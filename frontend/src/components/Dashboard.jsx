@@ -465,7 +465,11 @@ export default function Dashboard() {
   };
 
   const handleDeleteProject = async (projectId, e) => {
-    e.stopPropagation();
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    
     if (!window.confirm('Are you sure you want to delete this project? This will also delete the associated chatroom. This action cannot be undone.')) {
       return;
     }
@@ -478,7 +482,7 @@ export default function Dashboard() {
       
       // Check if deletion was successful
       if (response.data?.success !== false) {
-        showNotification('Project deleted successfully', 'success');
+        showNotification(response.data?.message || 'Project deleted successfully', 'success');
         // Refresh projects list
         await fetchProjects();
       } else {
@@ -498,20 +502,36 @@ export default function Dashboard() {
   };
 
   const handleLeaveProject = async (projectId, e) => {
-    e.stopPropagation();
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    
     if (!window.confirm('Are you sure you want to leave this project?')) {
       return;
     }
     
     setLeavingProject(projectId);
     try {
-      await apiClient.post(`/api/projects/${projectId}/leave`, {}, {
+      const response = await apiClient.post(`/api/projects/${projectId}/leave`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      showNotification('Left project successfully', 'success');
-      await fetchProjects();
+      
+      // Check if leaving was successful
+      if (response.data?.success !== false) {
+        showNotification(response.data?.message || 'Left project successfully', 'success');
+        // Refresh projects list
+        await fetchProjects();
+      } else {
+        throw new Error(response.data?.error || 'Failed to leave project');
+      }
     } catch (error) {
-      showNotification('Failed to leave project: ' + (error.response?.data?.error || error.message), 'error');
+      console.error('Error leaving project:', error);
+      const errorMessage = error.response?.data?.error || 
+                          error.response?.data?.message || 
+                          error.message || 
+                          'Failed to leave project';
+      showNotification(errorMessage, 'error');
     } finally {
       setLeavingProject(null);
       setShowProjectMenu(null);
@@ -945,10 +965,14 @@ export default function Dashboard() {
                             <MoreVertical size={18} className="text-green-600" />
                           </button>
                           {showProjectMenu === project._id && (
-                            <div className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[160px]">
+                            <div 
+                              className="absolute right-0 top-8 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50 min-w-[160px]"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  e.preventDefault();
                                   const chatRoomId = project?.chatRoom?._id || project?.chatRoom;
                                   if (chatRoomId) {
                                     openChat(project);
@@ -962,7 +986,11 @@ export default function Dashboard() {
                               </button>
                               {!isOwner && (
                                 <button
-                                  onClick={(e) => handleLeaveProject(project._id, e)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    handleLeaveProject(project._id, e);
+                                  }}
                                   disabled={leavingProject === project._id}
                                   className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
                                 >
@@ -976,7 +1004,11 @@ export default function Dashboard() {
                               )}
                               {isOwner && (
                                 <button
-                                  onClick={(e) => handleDeleteProject(project._id, e)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    handleDeleteProject(project._id, e);
+                                  }}
                                   disabled={deletingProject === project._id}
                                   className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50"
                                 >
@@ -1754,7 +1786,7 @@ export default function Dashboard() {
       {/* Click outside to close menus */}
       {(showRoomMenu || showProjectMenu) && (
         <div
-          className="fixed inset-0 z-0"
+          className="fixed inset-0 z-40"
           onClick={() => {
             setShowRoomMenu(null);
             setShowProjectMenu(null);

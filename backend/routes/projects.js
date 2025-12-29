@@ -813,31 +813,60 @@ router.post('/:projectId/leave', authenticateToken, async (req, res) => {
     // Get user info before removing
     const leavingUser = await User.findById(req.userId);
     
-    // Remove user from chatroom if it exists
+    // Collect all chatroom IDs to remove user from (main chatRoom + all in chatRooms array)
+    const chatRoomIdsToUpdate = [];
+    
+    // Add main chatroom if exists
     if (project.chatRoom) {
-      const chatRoom = await ChatRoom.findById(project.chatRoom);
-      if (chatRoom) {
+      const mainChatRoomId = project.chatRoom._id || project.chatRoom;
+      if (mainChatRoomId) {
+        chatRoomIdsToUpdate.push(mainChatRoomId);
+      }
+    }
+    
+    // Add all chatrooms from chatRooms array
+    if (project.chatRooms && project.chatRooms.length > 0) {
+      project.chatRooms.forEach(room => {
+        const roomId = room._id || room;
+        if (roomId && !chatRoomIdsToUpdate.some(id => id.toString() === roomId.toString())) {
+          chatRoomIdsToUpdate.push(roomId);
+        }
+      });
+    }
+    
+    // Remove user from all chatrooms
+    if (chatRoomIdsToUpdate.length > 0) {
+      const chatRooms = await ChatRoom.find({ _id: { $in: chatRoomIdsToUpdate } });
+      
+      for (const chatRoom of chatRooms) {
+        const beforeCount = chatRoom.members.length;
         chatRoom.members = chatRoom.members.filter(
           m => m.toString() !== req.userId.toString()
         );
-        await chatRoom.save();
         
-        // Emit socket event to notify all room members about the member leaving
-        try {
-          const io = req.app.get('io');
-          if (io) {
-            const roomName = `room:${project.chatRoom}`;
-            io.to(roomName).emit('member_left', {
-              roomId: project.chatRoom,
-              userId: req.userId,
-              username: leavingUser?.username || 'Unknown'
-            });
+        // Only save if membership changed
+        if (chatRoom.members.length !== beforeCount) {
+          await chatRoom.save();
+          
+          // Emit socket event to notify all room members about the member leaving
+          try {
+            const io = req.app.get('io');
+            if (io) {
+              const roomName = `room:${chatRoom._id}`;
+              io.to(roomName).emit('member_left', {
+                roomId: chatRoom._id,
+                userId: req.userId,
+                username: leavingUser?.username || 'Unknown'
+              });
+            }
+          } catch (socketError) {
+            console.error('Error emitting member_left event:', socketError);
+            // Don't fail the request if socket emission fails
           }
-        } catch (socketError) {
-          console.error('Error emitting member_left event:', socketError);
-          // Don't fail the request if socket emission fails
         }
       }
+      
+      console.log(`✅ Removed user ${req.userId} from ${chatRoomIdsToUpdate.length} chatroom(s) for project ${project._id}`);
     }
     
     // Remove project from user's projects list

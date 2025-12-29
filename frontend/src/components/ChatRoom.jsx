@@ -228,13 +228,25 @@ export default function ChatRoom() {
 
     const joinRoom = () => {
       if (roomId && newSocket.connected) {
-        logger.debug('Joining room:', roomId);
+        logger.debug('🔌 Joining room:', roomId);
         newSocket.emit('join_room', roomId);
+        // Verify join after a short delay
+        setTimeout(() => {
+          if (newSocket.connected) {
+            logger.debug('✅ Room join verification - socket still connected');
+          }
+        }, 500);
+      } else {
+        logger.warn('⚠️ Cannot join room - socket not connected or no roomId', { 
+          connected: newSocket.connected, 
+          roomId 
+        });
       }
     };
 
     newSocket.on('connect', () => {
       logger.log('✅ Socket connected to server, socket ID:', newSocket.id);
+      // Join room immediately on connect
       joinRoom();
       // Always refresh messages/room on connect to stay in sync
       if (roomId) {
@@ -282,6 +294,14 @@ export default function ChatRoom() {
 
     newSocket.on('room_joined', (data) => {
       logger.debug('✅ Successfully joined room:', data.roomId);
+      // Verify we're in the correct room
+      if (data.roomId && data.roomId.toString() !== roomId?.toString()) {
+        logger.warn('⚠️ Joined different room than expected:', data.roomId, 'expected:', roomId);
+        // Rejoin correct room
+        if (roomId) {
+          joinRoom();
+        }
+      }
     });
 
     // Removed duplicate error handler - using the one below with better error handling
@@ -328,11 +348,21 @@ export default function ChatRoom() {
     const flushMessageUpdates = () => {
       if (messageUpdateQueue.length === 0) return;
       
+      // Filter queue to only include messages for current room
+      const filteredQueue = messageUpdateQueue.filter(data => 
+        data.roomId && data.roomId.toString() === roomId?.toString()
+      );
+      
+      if (filteredQueue.length === 0) {
+        messageUpdateQueue.length = 0;
+        return;
+      }
+      
       // Track new message IDs outside the setState callback
       const newMessageIds = new Set();
       
       // Check if any new message is from current user - always scroll for own messages
-      const hasOwnMessage = messageUpdateQueue.some(data => {
+      const hasOwnMessage = filteredQueue.some(data => {
         const msgUserId = data.message.user?._id || data.message.user;
         return user && (msgUserId?.toString() === user._id?.toString());
       });
@@ -340,7 +370,7 @@ export default function ChatRoom() {
       setMessages(prev => {
         let updated = [...prev];
         
-        messageUpdateQueue.forEach(data => {
+        filteredQueue.forEach(data => {
           const exists = updated.some(msg => msg._id === data.message._id);
           if (!exists) {
             // Remove optimistic message if exists
@@ -369,10 +399,11 @@ export default function ChatRoom() {
           shouldScrollToBottomRef.current = true;
         }
         
+        // Immediate scroll for faster response
         setTimeout(() => {
           scrollToBottom();
           shouldScrollToBottomRef.current = false;
-        }, 50); // Reduced delay for faster response
+        }, 10);
       }
       
       // Clear the queue after processing
@@ -380,21 +411,28 @@ export default function ChatRoom() {
     };
     
     newSocket.on('new_message', (data) => {
+      // Only process messages for the current room
+      if (!data.roomId || data.roomId.toString() !== roomId?.toString()) {
+        logger.debug('Ignoring message from different room:', data.roomId, 'current:', roomId);
+        return;
+      }
+      
+      logger.debug('📨 Received new_message event:', data);
       messageUpdateQueue.push(data);
       
-      // Batch updates - flush every 100ms or immediately if queue is getting large (increased for better performance)
+      // Batch updates - flush every 50ms or immediately if queue is getting large
       if (messageUpdateTimeoutRef.current) {
         clearTimeout(messageUpdateTimeoutRef.current);
       }
       
-      if (messageUpdateQueue.length >= 10) {
-        // Flush immediately if queue is large
+      if (messageUpdateQueue.length >= 3) {
+        // Flush immediately if queue is getting large
         flushMessageUpdates();
       } else {
-        // Otherwise batch for 100ms (increased from 50ms to reduce re-renders)
+        // Otherwise batch for 25ms for very fast response
         messageUpdateTimeoutRef.current = setTimeout(() => {
           flushMessageUpdates();
-        }, 100);
+        }, 25);
       }
     });
 
@@ -711,6 +749,14 @@ export default function ChatRoom() {
       fetchingRoomRef.current = false;
     }
   }, [roomId, token, navigate]);
+
+  // Ensure room is joined whenever roomId changes or socket connects
+  useEffect(() => {
+    if (socket && socket.connected && roomId) {
+      logger.debug('🔄 Room ID or socket changed - ensuring room is joined:', roomId);
+      socket.emit('join_room', roomId);
+    }
+  }, [socket, roomId]);
 
   // Store fetchRoom in ref for socket events
   useEffect(() => {
