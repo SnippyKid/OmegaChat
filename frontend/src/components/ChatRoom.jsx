@@ -742,9 +742,16 @@ export default function ChatRoom() {
     }, 3000);
   }, [socket, roomId]);
 
+  // Limit rendered messages to reduce DOM work in large rooms
+  const MAX_RENDERED_MESSAGES = 200;
+  const renderedMessages = useMemo(() => {
+    if (messages.length <= MAX_RENDERED_MESSAGES) return messages;
+    return messages.slice(messages.length - MAX_RENDERED_MESSAGES);
+  }, [messages]);
+
   // Memoize message metadata to avoid recalculating on every render
   const messagesWithMetadata = useMemo(() => {
-    return messages.map(message => {
+    return renderedMessages.map(message => {
       const messageUserId = message.user?._id || message.user;
       const isAIMessage = message.type === 'ai_code' || message.user?.username === 'Omega AI' || message.user?.username === 'omega';
       const isDKMessage = message.type === 'dk_bot' || message.user?.username === 'DK' || message.user?.username === 'dk' || message.user?._id === 'dk-bot';
@@ -767,7 +774,7 @@ export default function ChatRoom() {
         }
       };
     });
-  }, [messages, user]);
+  }, [renderedMessages, user]);
 
   // Fetch room and messages immediately when component mounts or roomId changes
   useEffect(() => {

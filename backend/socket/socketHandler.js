@@ -504,14 +504,20 @@ export function setupSocketIO(io) {
                         setTimeout(() => reject(new Error('Context fetch timeout after 15 seconds')), 15000)
                       );
                       
-                  repoContext = await fetchRepoContextWithCache(
-                    project.githubRepo.fullName,
-                    socket.userId,
-                    user.githubToken
-                  );
-                  repoAccessInfo.contextFetched = true;
-                  console.log('✅ Repository context fetched successfully!');
-                  console.log(`   - Context length: ${repoContext.length} chars`);
+                  try {
+                    repoContext = await fetchRepoContextWithCache(
+                      project.githubRepo.fullName,
+                      socket.userId,
+                      user.githubToken
+                    );
+                    repoAccessInfo.contextFetched = true;
+                    console.log('✅ Repository context fetched successfully!');
+                    console.log(`   - Context length: ${repoContext.length} chars`);
+                  } catch (fetchError) {
+                    repoAccessInfo.error = fetchError.message || 'Failed to fetch repository context';
+                    console.error('❌ Error fetching repository context:', fetchError.message);
+                    // Continue without context - AI will still work but without repo access
+                  }
                     } catch (fetchError) {
                       repoAccessInfo.error = fetchError.message || 'Failed to fetch repository context';
                       console.error('❌ Error fetching repository context:', fetchError.message);
@@ -565,14 +571,20 @@ export function setupSocketIO(io) {
                     setTimeout(() => reject(new Error('Context fetch timeout after 15 seconds')), 15000)
                   );
                   
-                repoContext = await fetchRepoContextWithCache(
-                  room.repository,
-                  socket.userId,
-                  user.githubToken
-                );
-                repoAccessInfo.contextFetched = true;
-                console.log('✅ Repository context fetched successfully!');
-                console.log(`   - Context length: ${repoContext.length} chars`);
+                try {
+                  repoContext = await fetchRepoContextWithCache(
+                    room.repository,
+                    socket.userId,
+                    user.githubToken
+                  );
+                  repoAccessInfo.contextFetched = true;
+                  console.log('✅ Repository context fetched successfully!');
+                  console.log(`   - Context length: ${repoContext.length} chars`);
+                } catch (fetchError) {
+                  repoAccessInfo.error = fetchError.message || 'Failed to fetch repository context';
+                  console.error('❌ Error fetching repository context:', fetchError.message);
+                  // Continue without context - AI will still work but without repo access
+                }
                 } catch (fetchError) {
                   repoAccessInfo.error = fetchError.message || 'Failed to fetch repository context';
                   console.error('❌ Error fetching repository context:', fetchError.message);
