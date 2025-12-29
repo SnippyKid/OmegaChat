@@ -202,7 +202,7 @@ export default function ChatRoom() {
     
     const newSocket = io(socketUrl, {
       auth: { token },
-      transports: ['polling', 'websocket'], // Try polling first, then websocket (better for Render.com)
+      transports: ['websocket', 'polling'], // Prefer websocket, fall back to polling
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -210,7 +210,8 @@ export default function ChatRoom() {
       timeout: 20000,
       forceNew: false,
       upgrade: true,
-      rememberUpgrade: true
+      rememberUpgrade: true,
+      withCredentials: true
     });
 
     // Debounced fetchRoom function for socket events
@@ -235,8 +236,9 @@ export default function ChatRoom() {
     newSocket.on('connect', () => {
       logger.log('✅ Socket connected to server, socket ID:', newSocket.id);
       joinRoom();
-      // Only refresh messages if we don't have any yet (initial connection)
-      if (roomId && messages.length === 0) {
+      // Always refresh messages/room on connect to stay in sync
+      if (roomId) {
+        fetchRoom(true);
         fetchMessages(0, false, true);
       }
     });
@@ -260,7 +262,10 @@ export default function ChatRoom() {
     newSocket.on('reconnect', (attemptNumber) => {
       logger.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
       joinRoom();
-      // Don't refresh messages on reconnect - socket events will handle new messages
+      if (roomId) {
+        fetchRoom(true);
+        fetchMessages(0, false, true);
+      }
     });
 
     newSocket.on('reconnect_attempt', (attemptNumber) => {

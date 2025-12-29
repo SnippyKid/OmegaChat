@@ -716,18 +716,46 @@ router.delete('/:projectId', authenticateToken, async (req, res) => {
     const project = await Project.findById(req.params.projectId);
     
     if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Project not found' 
+      });
     }
     
     // Check if user is the owner
     const owner = project.members.find(m => m.role === 'owner');
     if (!owner || owner.user.toString() !== req.userId.toString()) {
-      return res.status(403).json({ error: 'Only the project owner can delete the project' });
+      return res.status(403).json({ 
+        success: false,
+        error: 'Only the project owner can delete the project' 
+      });
     }
     
-    // Delete associated chatroom
+    // Delete all associated chatrooms (both main chatRoom and all in chatRooms array)
+    const chatRoomIdsToDelete = [];
+    
+    // Add main chatroom if exists
     if (project.chatRoom) {
-      await ChatRoom.findByIdAndDelete(project.chatRoom);
+      const mainChatRoomId = project.chatRoom._id || project.chatRoom;
+      if (mainChatRoomId) {
+        chatRoomIdsToDelete.push(mainChatRoomId);
+      }
+    }
+    
+    // Add all chatrooms from chatRooms array
+    if (project.chatRooms && project.chatRooms.length > 0) {
+      project.chatRooms.forEach(room => {
+        const roomId = room._id || room;
+        if (roomId && !chatRoomIdsToDelete.some(id => id.toString() === roomId.toString())) {
+          chatRoomIdsToDelete.push(roomId);
+        }
+      });
+    }
+    
+    // Delete all chatrooms
+    if (chatRoomIdsToDelete.length > 0) {
+      await ChatRoom.deleteMany({ _id: { $in: chatRoomIdsToDelete } });
+      console.log(`✅ Deleted ${chatRoomIdsToDelete.length} chatroom(s) for project ${project._id}`);
     }
     
     // Remove project from all users' projects list
@@ -739,10 +767,19 @@ router.delete('/:projectId', authenticateToken, async (req, res) => {
     // Delete the project
     await Project.findByIdAndDelete(req.params.projectId);
     
-    res.json({ success: true, message: 'Project deleted successfully' });
+    console.log(`✅ Project ${req.params.projectId} deleted successfully`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Project deleted successfully' 
+    });
   } catch (error) {
-    console.error('Error deleting project:', error);
-    res.status(500).json({ error: 'Failed to delete project: ' + error.message });
+    console.error('❌ Error deleting project:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to delete project: ' + (error.message || 'Unknown error') 
+    });
   }
 });
 

@@ -207,6 +207,27 @@ When repository context is provided in the user message (you'll see "Repository 
       }
       
       // Provide helpful error messages for specific errors
+      if (apiError.message?.includes('429') || apiError.message?.includes('Too Many Requests') || apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
+        const helpfulMessage = `Gemini API rate limit exceeded (429 Too Many Requests).
+
+You have exceeded your current quota or rate limit. This can happen if:
+1. You've used up your free tier quota for the day/month
+2. You're making too many requests too quickly
+3. Your API key has usage limits that have been reached
+
+Solutions:
+- Wait a few minutes and try again (rate limits reset periodically)
+- Check your usage and quota at: https://ai.dev/usage?tab=rate-limit
+- Review your billing plan at: https://aistudio.google.com/apikey
+- Consider upgrading your plan if you need higher limits
+- Reduce the frequency of AI requests
+
+For more information: https://ai.google.dev/gemini-api/docs/rate-limits
+
+Original error: ${apiError.message}`;
+        throw new Error(helpfulMessage);
+      }
+      
       if (apiError.message?.includes('403') || apiError.message?.includes('Forbidden') || apiError.message?.includes('unregistered callers')) {
         const helpfulMessage = `Gemini API authentication failed (403 Forbidden). 
 

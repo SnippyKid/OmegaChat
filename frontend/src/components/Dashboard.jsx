@@ -472,13 +472,25 @@ export default function Dashboard() {
     
     setDeletingProject(projectId);
     try {
-      await apiClient.delete(`/api/projects/${projectId}`, {
+      const response = await apiClient.delete(`/api/projects/${projectId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      showNotification('Project deleted successfully', 'success');
-      await fetchProjects();
+      
+      // Check if deletion was successful
+      if (response.data?.success !== false) {
+        showNotification('Project deleted successfully', 'success');
+        // Refresh projects list
+        await fetchProjects();
+      } else {
+        throw new Error(response.data?.error || 'Failed to delete project');
+      }
     } catch (error) {
-      showNotification('Failed to delete project: ' + (error.response?.data?.error || error.message), 'error');
+      console.error('Error deleting project:', error);
+      const errorMessage = error.response?.data?.error || 
+                          error.response?.data?.message || 
+                          error.message || 
+                          'Failed to delete project';
+      showNotification(errorMessage, 'error');
     } finally {
       setDeletingProject(null);
       setShowProjectMenu(null);

@@ -686,12 +686,22 @@ export function setupSocketIO(io) {
           console.error('❌ Error stack:', error.stack);
           console.error('❌ Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
           
+          // Format error message for user display
+          let userFriendlyError = error.message || 'Unknown error occurred';
+          
+          // Extract key information for rate limit errors
+          if (error.message?.includes('429') || error.message?.includes('quota') || error.message?.includes('rate limit')) {
+            // Extract the main message (before "Possible causes" or "Solutions")
+            const mainMessage = error.message.split('\n\n')[0] || error.message.split('Possible causes')[0] || error.message;
+            userFriendlyError = mainMessage.trim();
+          }
+          
           // Send error message to user
           const errorMessage = {
             user: socket.userId,
             content: `@omega: ${cleanPrompt || 'request'}`,
             type: 'text',
-            error: `AI generation failed: ${error.message || 'Unknown error'}`,
+            error: `AI generation failed: ${userFriendlyError}`,
             errorDetails: error.stack
           };
           
@@ -723,10 +733,9 @@ export function setupSocketIO(io) {
           io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           
           // Also emit error to sender with proper error object
-          const errorMsgText = error.message || 'Unknown error occurred';
           socket.emit('error', { 
-            message: `AI generation failed: ${errorMsgText}`,
-            error: errorMsgText,
+            message: `AI generation failed: ${userFriendlyError}`,
+            error: userFriendlyError,
             details: process.env.NODE_ENV === 'development' ? error.stack : undefined
           });
           
