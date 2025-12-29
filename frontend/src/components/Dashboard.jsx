@@ -486,16 +486,28 @@ export default function Dashboard() {
     
     try {
       console.log('🗑️ Attempting to delete project:', projectId);
+      console.log('🗑️ Using token:', token ? `${token.substring(0, 20)}...` : 'NO TOKEN');
+      
+      // Ensure token is available
+      if (!token) {
+        throw new Error('Authentication token is missing. Please log in again.');
+      }
+      
       const response = await apiClient.delete(`/api/projects/${projectId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 15000 // 15 second timeout
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 20000, // 20 second timeout
+        validateStatus: (status) => status < 500 // Don't throw on 4xx errors
       });
       
-      console.log('✅ Delete response:', response.data);
+      console.log('✅ Delete response status:', response.status);
+      console.log('✅ Delete response data:', response.data);
       
-      // Check if deletion was successful
-      if (response.data?.success !== false) {
-        showNotification('✅ Project and all chatrooms deleted successfully', 'success');
+      // Check if deletion was successful - accept both success: true and success: undefined
+      if (response.data?.success !== false && response.status >= 200 && response.status < 300) {
+        showNotification(response.data?.message || '✅ Project and all chatrooms deleted successfully', 'success');
         
         // Force refresh projects list immediately
         await fetchProjects();
@@ -539,34 +551,73 @@ export default function Dashboard() {
       e.preventDefault();
     }
     
-    if (!window.confirm('Are you sure you want to leave this project?')) {
+    if (!window.confirm('Are you sure you want to leave this project? You will lose access to all project chatrooms.')) {
       return;
     }
     
     setLeavingProject(projectId);
+    setShowProjectMenu(null); // Close menu immediately
+    
     try {
+      console.log('🚪 Attempting to leave project:', projectId);
+      console.log('🚪 Using token:', token ? `${token.substring(0, 20)}...` : 'NO TOKEN');
+      
+      // Ensure token is available
+      if (!token) {
+        throw new Error('Authentication token is missing. Please log in again.');
+      }
+      
       const response = await apiClient.post(`/api/projects/${projectId}/leave`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 20000, // 20 second timeout
+        validateStatus: (status) => status < 500 // Don't throw on 4xx errors
       });
       
-      // Check if leaving was successful
-      if (response.data?.success !== false) {
+      console.log('✅ Leave response status:', response.status);
+      console.log('✅ Leave response data:', response.data);
+      
+      // Check if leaving was successful - accept both success: true and success: undefined
+      if (response.data?.success !== false && response.status >= 200 && response.status < 300) {
         showNotification(response.data?.message || 'Left project successfully', 'success');
-        // Refresh projects list
+        
+        // Force refresh projects list immediately
         await fetchProjects();
+        
+        // Also refresh personal rooms in case any were linked
+        await fetchPersonalRooms();
+        
+        // Small delay to ensure UI updates
+        setTimeout(() => {
+          setLeavingProject(null);
+        }, 500);
       } else {
         throw new Error(response.data?.error || 'Failed to leave project');
       }
     } catch (error) {
-      console.error('Error leaving project:', error);
-      const errorMessage = error.response?.data?.error || 
-                          error.response?.data?.message || 
-                          error.message || 
-                          'Failed to leave project';
+      console.error('❌ Error leaving project:', error);
+      console.error('Error response:', error.response?.data);
+      
+      let errorMessage = 'Failed to leave project';
+      
+      if (error.response?.status === 400) {
+        errorMessage = error.response.data?.error || 'You cannot leave this project. Project owners must delete the project instead.';
+      } else if (error.response?.status === 403) {
+        errorMessage = 'You are not a member of this project.';
+      } else if (error.response?.status === 404) {
+        errorMessage = 'Project not found. It may have already been deleted.';
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
       showNotification(errorMessage, 'error');
-    } finally {
       setLeavingProject(null);
-      setShowProjectMenu(null);
     }
   };
 

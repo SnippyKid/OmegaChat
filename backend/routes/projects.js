@@ -722,9 +722,20 @@ router.delete('/:projectId', authenticateToken, async (req, res) => {
       });
     }
     
-    // Check if user is the owner
+    // Check if user is the owner (handle both ObjectId and populated objects)
     const owner = project.members.find(m => m.role === 'owner');
-    if (!owner || owner.user.toString() !== req.userId.toString()) {
+    if (!owner) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Project has no owner. Cannot delete.' 
+      });
+    }
+    
+    const ownerUserId = typeof owner.user === 'object' && owner.user?._id 
+      ? owner.user._id.toString() 
+      : (owner.user?.toString() || owner.user);
+    
+    if (ownerUserId !== req.userId.toString()) {
       return res.status(403).json({ 
         success: false,
         error: 'Only the project owner can delete the project' 
@@ -797,25 +808,48 @@ router.post('/:projectId/leave', authenticateToken, async (req, res) => {
     const project = await Project.findById(req.params.projectId);
     
     if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Project not found' 
+      });
     }
     
-    // Check if user is a member
-    const isMember = project.members.some(m => m.user.toString() === req.userId.toString());
+    // Check if user is a member (handle both ObjectId and populated objects)
+    const isMember = project.members.some(m => {
+      const memberUserId = typeof m.user === 'object' && m.user?._id 
+        ? m.user._id.toString() 
+        : (m.user?.toString() || m.user);
+      return memberUserId === req.userId.toString();
+    });
+    
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this project' });
+      return res.status(403).json({ 
+        success: false,
+        error: 'Not a member of this project' 
+      });
     }
     
-    // Check if user is owner
+    // Check if user is owner (handle both ObjectId and populated objects)
     const owner = project.members.find(m => m.role === 'owner');
-    if (owner && owner.user.toString() === req.userId.toString()) {
-      return res.status(400).json({ error: 'Project owner cannot leave. Please delete the project or transfer ownership.' });
+    if (owner) {
+      const ownerUserId = typeof owner.user === 'object' && owner.user?._id 
+        ? owner.user._id.toString() 
+        : (owner.user?.toString() || owner.user);
+      if (ownerUserId === req.userId.toString()) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Project owner cannot leave. Please delete the project or transfer ownership.' 
+        });
+      }
     }
     
-    // Remove user from project members
-    project.members = project.members.filter(
-      m => m.user.toString() !== req.userId.toString()
-    );
+    // Remove user from project members (handle both ObjectId and populated objects)
+    project.members = project.members.filter(m => {
+      const memberUserId = typeof m.user === 'object' && m.user?._id 
+        ? m.user._id.toString() 
+        : (m.user?.toString() || m.user);
+      return memberUserId !== req.userId.toString();
+    });
     await project.save();
     
     // Get user info before removing
@@ -886,10 +920,19 @@ router.post('/:projectId/leave', authenticateToken, async (req, res) => {
       await user.save();
     }
     
-    res.json({ success: true, message: 'Left project successfully' });
+    console.log(`✅ User ${req.userId} left project ${project._id} (${project.name})`);
+    
+    res.json({ 
+      success: true, 
+      message: `Successfully left project "${project.name}"` 
+    });
   } catch (error) {
-    console.error('Error leaving project:', error);
-    res.status(500).json({ error: 'Failed to leave project: ' + error.message });
+    console.error('❌ Error leaving project:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to leave project: ' + (error.message || 'Unknown error') 
+    });
   }
 });
 
