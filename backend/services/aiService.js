@@ -43,52 +43,46 @@ const getAIProvider = () => {
   return 'gemini';
 };
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Very small in-process limiter to avoid bursting OpenAI with many simultaneous socket events.
+// This won't fix exhausted account quota, but it dramatically reduces 429s from bursts.
+let openAiInFlight = 0;
+const openAiWaitQueue = [];
+
+const acquireOpenAiSlot = async () => {
+  const maxConcurrent = Number.parseInt(process.env.OPENAI_MAX_CONCURRENT, 10) || 2;
+  if (openAiInFlight < maxConcurrent) {
+    openAiInFlight += 1;
+    return () => { openAiInFlight -= 1; const next = openAiWaitQueue.shift(); if (next) next(); };
+  }
+
+  await new Promise(resolve => openAiWaitQueue.push(resolve));
+  openAiInFlight += 1;
+  return () => { openAiInFlight -= 1; const next = openAiWaitQueue.shift(); if (next) next(); };
+};
+
+let openAiLastCallAt = 0;
+const waitForMinInterval = async () => {
+  const minIntervalMs = Number.parseInt(process.env.OPENAI_MIN_INTERVAL_MS, 10) || 250;
+  const now = Date.now();
+  const elapsed = now - openAiLastCallAt;
+  if (elapsed < minIntervalMs) {
+    await sleep(minIntervalMs - elapsed);
+  }
+  openAiLastCallAt = Date.now();
+};
+
 const buildPrompts = (prompt, context) => {
-  const systemInstruction = `You are Omega, an AI code assistant. 
+  // Keep the system prompt concise to reduce token usage (helps avoid TPM-based 429s),
+  // while preserving the "repo access" behavior.
+  const systemInstruction = `You are Omega, an AI code assistant.
 
-**IMPORTANT: Understand the user's intent first!**
-
-- If the user is just greeting you (hi, hello, hey, etc.), respond naturally and conversationally. Do NOT generate code.
-- If the user asks a question or needs help, respond conversationally first, then offer to help with code if relevant.
-- Only generate code when the user explicitly asks for code, a function, a solution, or something technical.
-
-**REPOSITORY CONTEXT ACCESS:**
-When repository context is provided in the user message (you'll see "Repository Context:" section), you HAVE FULL ACCESS to the repository files and codebase. This means:
-- You can read, explain, and reference any files mentioned in the repository context
-- You can answer questions about the codebase, files, functions, and structure
-- You can explain what files do, how they work, and their relationships
-- When asked about a file (like "explain readme.md"), USE the repository context to find and explain that file
-- The repository context contains actual file contents - use them to provide accurate answers
-- If a user asks about a file that's in the repository context, you MUST use that context to answer, not say you don't have access
-
-**When generating code, follow this format:**
-
-1. **Explanation Section** (First):
-   - Start with a clear, concise explanation of what the user is asking for
-   - Explain the approach or solution strategy
-   - Keep it simple and easy to understand (2-4 sentences max)
-
-2. **Solution Section** (After explanation):
-   - Provide the actual code solution
-   - Use clean, well-commented code following best practices
-   - Format code in markdown code blocks with language identifier
-
-**Response Format (ONLY when code is needed):**
-[Your explanation here - what the problem is and how we'll solve it]
-
-\`\`\`[language]
-[Your code solution here]
-\`\`\`
-
-**Rules:**
-- Be friendly and conversational for greetings and questions
-- Only generate code when explicitly requested
-- Keep explanations simple and brief
-- Code should be production-ready and well-commented
-- If user asks for a specific language/framework, use that
-- When repository context is provided, match existing code patterns and style
-- **CRITICAL: If repository context is provided and user asks about files/code, USE that context to answer - you have access to those files!**
-- Be concise - avoid unnecessary verbosity`;
+Rules:
+- If user is greeting or chatting, respond normally (no code).
+- Only generate code when explicitly requested.
+- When repository context is present (it starts with "Repository Context:"), you must use it to answer questions about the codebase.
+- If you output code, use this format: brief explanation, then a single markdown code block with language.`;
 
   const userMessage = context
     ? `${context}\n\nUser request: ${prompt}`
@@ -112,27 +106,71 @@ async function generateWithOpenAI(prompt, context) {
   const temperature = Number.isFinite(Number(process.env.OPENAI_TEMPERATURE))
     ? Number(process.env.OPENAI_TEMPERATURE)
     : 0.2;
+  const maxTokens = Number.isFinite(Number(process.env.OPENAI_MAX_TOKENS))
+    ? Number(process.env.OPENAI_MAX_TOKENS)
+    : 900;
 
   const { systemInstruction, userMessage } = buildPrompts(prompt, context);
 
   const client = new OpenAI({ apiKey: apiKey.trim() });
 
   try {
-    const completion = await client.chat.completions.create({
-      model,
-      temperature,
-      messages: [
-        { role: 'system', content: systemInstruction },
-        { role: 'user', content: userMessage }
-      ]
-    });
+    const release = await acquireOpenAiSlot();
+    try {
+      await waitForMinInterval();
 
-    const content = completion?.choices?.[0]?.message?.content;
-    if (!content || typeof content !== 'string') {
-      throw new Error('OpenAI returned an empty response');
+      const maxRetries = Number.parseInt(process.env.OPENAI_RETRY_MAX, 10) || 3;
+      let attempt = 0;
+      let backoffMs = 800;
+
+      // Retry on 429 with exponential backoff; respects Retry-After when provided.
+      while (true) {
+        try {
+          const completion = await client.chat.completions.create({
+            model,
+            temperature,
+            max_tokens: maxTokens,
+            messages: [
+              { role: 'system', content: systemInstruction },
+              { role: 'user', content: userMessage }
+            ]
+          });
+
+          const content = completion?.choices?.[0]?.message?.content;
+          if (!content || typeof content !== 'string') {
+            throw new Error('OpenAI returned an empty response');
+          }
+          return content;
+        } catch (err) {
+          const status = err?.status || err?.response?.status;
+          const msg = err?.message || String(err);
+          const is429 = status === 429 || msg.includes('429') || msg.toLowerCase().includes('rate limit');
+
+          if (!is429 || attempt >= maxRetries) {
+            throw err;
+          }
+
+          // Try to honor Retry-After header if present
+          const retryAfter = err?.headers?.get?.('retry-after') || err?.response?.headers?.['retry-after'];
+          const retryAfterMsHeader = err?.headers?.get?.('retry-after-ms') || err?.response?.headers?.['retry-after-ms'];
+          let waitMs = backoffMs;
+          if (retryAfterMsHeader && Number.isFinite(Number(retryAfterMsHeader))) {
+            waitMs = Number(retryAfterMsHeader);
+          } else if (retryAfter && Number.isFinite(Number(retryAfter))) {
+            waitMs = Number(retryAfter) * 1000;
+          }
+
+          // jitter
+          waitMs = Math.min(waitMs + Math.floor(Math.random() * 250), 15000);
+          await sleep(waitMs);
+
+          attempt += 1;
+          backoffMs = Math.min(backoffMs * 2, 8000);
+        }
+      }
+    } finally {
+      release();
     }
-
-    return content;
   } catch (err) {
     const msg = err?.message || String(err);
 
