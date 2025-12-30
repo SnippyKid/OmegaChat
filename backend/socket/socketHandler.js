@@ -405,16 +405,22 @@ export function setupSocketIO(io) {
         console.log(`   - User ID: ${socket.userId}`);
         console.log(`   - Socket ID: ${socket.id}`);
         
-        // Check API key first
-        const apiKey = process.env.GEMINI_API_KEY;
+        // Check AI provider + API key first (avoid starting expensive work if missing)
+        const provider = (process.env.AI_PROVIDER || '').trim().toLowerCase()
+          || (process.env.OPENAI_API_KEY ? 'openai' : 'gemini');
+
+        const apiKeyEnvVar = provider === 'openai' ? 'OPENAI_API_KEY' : 'GEMINI_API_KEY';
+        const apiKey = process.env[apiKeyEnvVar];
+
         if (!apiKey || apiKey.trim() === '') {
-          const errorMsg = 'GEMINI_API_KEY is not set in environment variables';
+          const errorMsg = `${apiKeyEnvVar} is not set in environment variables`;
           console.error(`❌ ${errorMsg}`);
           io.to(`room:${roomId}`).emit('ai_typing_stopped', { roomId });
           socket.emit('error', { message: errorMsg });
           return;
         }
-        console.log(`✅ API Key found: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`);
+
+        console.log(`✅ AI provider: ${provider} (key present)`);
         
         // Emit typing indicator IMMEDIATELY before any async operations
         // This ensures users see "Omega is thinking" right away
