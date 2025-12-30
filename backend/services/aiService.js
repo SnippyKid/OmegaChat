@@ -58,25 +58,26 @@ export async function generateCodeSnippet(prompt, context = '') {
     // Initialize GoogleGenerativeAI with the API key
     const genAI = new GoogleGenerativeAI(apiKey.trim());
 
-    // Preferred model: use env override, else pick a known available model from your list
-    // From your account's ListModels: gemini-2.5-flash is available and supports generateContent
-    const preferredModel = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+    // Preferred model: use env override, else pick a safer default on Render.
+    // Note: switching models won't fix an exhausted account quota, but it can help avoid per-model burst limits.
+    const preferredModel = process.env.GEMINI_MODEL?.trim()
+      || (process.env.RENDER ? 'gemini-1.5-flash' : 'gemini-2.5-flash');
 
-    // Pick the fastest available model without doing multiple probe calls.
-    // Order: explicit/env (or default 2.5 flash) -> cached working -> 2.5 flash -> flash-latest -> flash-001/002 -> pro fallbacks -> other flash variants.
+    // Pick a good default without doing multiple probe calls.
+    // Order: explicit/env -> cached working -> cheap/fast flash models -> pro fallbacks.
     const now = Date.now();
     const modelCandidates = [
       preferredModel,
       (cachedWorkingModel && (now - modelCacheTime) < MODEL_CACHE_DURATION) ? cachedWorkingModel : null,
-      'gemini-2.5-flash',
-      'gemini-flash-latest',
       'gemini-1.5-flash',
       'gemini-1.5-flash-002',
+      'gemini-2.0-flash-lite',
       'gemini-1.5-pro',
-      'gemini-pro',
       'gemini-2.0-flash',
       'gemini-2.0-flash-001',
-      'gemini-2.0-flash-lite'
+      'gemini-2.5-flash',
+      'gemini-flash-latest',
+      'gemini-pro'
     ].filter(Boolean);
 
     const uniqueCandidates = [...new Set(modelCandidates)];
@@ -207,8 +208,50 @@ When repository context is provided in the user message (you'll see "Repository 
       }
       
       // Provide helpful error messages for specific errors
-      if (apiError.message?.includes('429') || apiError.message?.includes('Too Many Requests') || apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
-        const helpfulMessage = `Gemini API rate limit exceeded (429 Too Many Requests).
+      const is429 = apiError.message?.includes('429')
+        || apiError.message?.includes('Too Many Requests')
+        || apiError.message?.includes('quota')
+        || apiError.message?.includes('rate limit');
+
+      if (is429) {
+        // Best-effort fallback: try a couple alternate models with a small backoff.
+        // This can help if you're hitting a per-model burst limit; it will NOT help if your account quota is exhausted.
+        const maxFallbackTries = Number.parseInt(process.env.GEMINI_429_FALLBACK_TRIES, 10) || 2;
+        const fallbackCandidates = uniqueCandidates.filter(c => c !== successfulModel);
+        const attemptedModels = [successfulModel].filter(Boolean);
+
+        let backoffMs = 800;
+        for (const candidate of fallbackCandidates.slice(0, maxFallbackTries)) {
+          attemptedModels.push(candidate);
+          try {
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+            const fallbackModel = genAI.getGenerativeModel({ model: candidate });
+            response = await invokeModel(fallbackModel);
+            cachedWorkingModel = candidate;
+            modelCacheTime = Date.now();
+            successfulModel = candidate;
+            break;
+          } catch (fallbackError) {
+            const fallbackIs429 = fallbackError?.message?.includes('429')
+              || fallbackError?.message?.includes('Too Many Requests')
+              || fallbackError?.message?.includes('quota')
+              || fallbackError?.message?.includes('rate limit');
+
+            // If it's not a 429, fall through to the normal handlers below.
+            if (!fallbackIs429) {
+              apiError = fallbackError;
+              break;
+            }
+          } finally {
+            backoffMs = Math.min(backoffMs * 2, 4000);
+          }
+        }
+
+        // If fallback succeeded, continue parsing the response.
+        if (response) {
+          // no-op; continue below to parsing
+        } else {
+          const helpfulMessage = `Gemini API rate limit exceeded (429 Too Many Requests).
 
 You have exceeded your current quota or rate limit. This can happen if:
 1. You've used up your free tier quota for the day/month
@@ -224,8 +267,11 @@ Solutions:
 
 For more information: https://ai.google.dev/gemini-api/docs/rate-limits
 
+Models attempted: ${attemptedModels.filter(Boolean).join(', ') || 'unknown'}
+
 Original error: ${apiError.message}`;
-        throw new Error(helpfulMessage);
+          throw new Error(helpfulMessage);
+        }
       }
       
       if (apiError.message?.includes('403') || apiError.message?.includes('Forbidden') || apiError.message?.includes('unregistered callers')) {
