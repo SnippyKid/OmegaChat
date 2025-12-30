@@ -471,7 +471,7 @@ export default function Dashboard() {
     console.log('🗑️ Token available:', !!token);
     
     if (e) {
-      e.stopPropagation();
+    e.stopPropagation();
       e.preventDefault();
     }
     
@@ -517,7 +517,7 @@ export default function Dashboard() {
         showNotification(response.data?.message || '✅ Project and all chatrooms deleted successfully', 'success');
         
         // Force refresh projects list immediately
-        await fetchProjects();
+      await fetchProjects();
         
         // Also refresh personal rooms in case any were linked
         await fetchPersonalRooms();
@@ -556,7 +556,7 @@ export default function Dashboard() {
     console.log('🚪 handleLeaveProject called with projectId:', projectId);
     
     if (e) {
-      e.stopPropagation();
+    e.stopPropagation();
       e.preventDefault();
     }
     
@@ -596,7 +596,7 @@ export default function Dashboard() {
         showNotification(response.data?.message || 'Left project successfully', 'success');
         
         // Force refresh projects list immediately
-        await fetchProjects();
+      await fetchProjects();
         
         // Also refresh personal rooms in case any were linked
         await fetchPersonalRooms();
@@ -1123,7 +1123,7 @@ export default function Dashboard() {
                               {isOwner && (
                                 <>
                                   <div className="border-t border-gray-200 my-1"></div>
-                                  <button
+                                <button
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1131,22 +1131,22 @@ export default function Dashboard() {
                                       console.log('🗑️ Delete button clicked for project:', project._id);
                                       handleDeleteProject(project._id, e);
                                     }}
-                                    disabled={deletingProject === project._id}
+                                  disabled={deletingProject === project._id}
                                     className="w-full px-4 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
                                     style={{ cursor: deletingProject === project._id ? 'not-allowed' : 'pointer' }}
-                                  >
-                                    {deletingProject === project._id ? (
+                                >
+                                  {deletingProject === project._id ? (
                                       <>
-                                        <Loader2 size={16} className="animate-spin" />
+                                    <Loader2 size={16} className="animate-spin" />
                                         Deleting...
                                       </>
-                                    ) : (
+                                  ) : (
                                       <>
-                                        <Trash2 size={16} />
+                                    <Trash2 size={16} />
                                         Delete Project Permanently
                                       </>
-                                    )}
-                                  </button>
+                                  )}
+                                </button>
                                 </>
                               )}
                             </div>
@@ -1919,8 +1919,8 @@ export default function Dashboard() {
           onClick={(e) => {
             // Only close if clicking directly on the backdrop, not on menu items
             if (e.target === e.currentTarget) {
-              setShowRoomMenu(null);
-              setShowProjectMenu(null);
+            setShowRoomMenu(null);
+            setShowProjectMenu(null);
             }
           }}
         />
